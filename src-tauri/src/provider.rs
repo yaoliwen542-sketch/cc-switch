@@ -476,6 +476,22 @@ pub struct ProviderMeta {
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
     pub github_account_id: Option<String>,
+
+    /// 上下文窗口大小（token 数）
+    #[serde(rename = "contextWindow", skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+
+    /// 是否启用滚动上下文
+    #[serde(rename = "rollingContextEnabled", skip_serializing_if = "Option::is_none")]
+    pub rolling_context_enabled: Option<bool>,
+
+    /// 触发压缩的阈值比例（0.0-1.0，默认 0.8）
+    #[serde(rename = "rollingContextThreshold", skip_serializing_if = "Option::is_none")]
+    pub rolling_context_threshold: Option<f64>,
+
+    /// 保留最近几轮完整对话（默认 6）
+    #[serde(rename = "rollingContextPreserveRounds", skip_serializing_if = "Option::is_none")]
+    pub rolling_context_preserve_rounds: Option<u32>,
 }
 
 impl ProviderMeta {
@@ -502,6 +518,26 @@ impl ProviderMeta {
         }
 
         None
+    }
+
+    /// Get context window, with default
+    pub fn context_window_or_default(&self) -> u64 {
+        self.context_window.unwrap_or(128_000)
+    }
+
+    /// Get rolling context threshold (0.0-1.0), with default 0.8
+    pub fn rolling_threshold(&self) -> f64 {
+        self.rolling_context_threshold.unwrap_or(0.8).clamp(0.1, 0.99)
+    }
+
+    /// Get number of rounds to preserve, with default 6
+    pub fn preserve_rounds(&self) -> u32 {
+        self.rolling_context_preserve_rounds.unwrap_or(6).max(1)
+    }
+
+    /// Check if rolling context is enabled
+    pub fn rolling_context_active(&self) -> bool {
+        self.rolling_context_enabled.unwrap_or(false)
     }
 }
 
