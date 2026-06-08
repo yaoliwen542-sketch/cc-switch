@@ -43,7 +43,7 @@ use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use rusqlite::{hooks::Action, Connection};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
@@ -74,7 +74,7 @@ pub(crate) use lock_conn;
 /// 使用 Mutex 包装 Connection 以支持在多线程环境（如 Tauri State）中共享。
 /// rusqlite::Connection 本身不是 Sync 的，因此需要这层包装。
 pub struct Database {
-    pub(crate) conn: Mutex<Connection>,
+    pub(crate) conn: Arc<Mutex<Connection>>,
 }
 
 fn register_db_change_hook(conn: &Connection) {
@@ -116,7 +116,7 @@ impl Database {
         register_db_change_hook(&conn);
 
         let db = Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         };
         db.create_tables()?;
 
@@ -171,7 +171,7 @@ impl Database {
         register_db_change_hook(&conn);
 
         let db = Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;
