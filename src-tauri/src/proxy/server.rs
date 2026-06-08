@@ -44,6 +44,8 @@ pub struct ProxyState {
     pub gemini_shadow: Arc<GeminiShadowStore>,
     /// Codex Chat bridge history，用于恢复 previous_response_id 指向的 tool call
     pub codex_chat_history: Arc<CodexChatHistoryStore>,
+    /// Rolling context message store，用于会话级消息历史管理和上下文窗口控制
+    pub message_store: Arc<crate::proxy::context_roller::message_store::MessageStore>,
     /// AppHandle，用于发射事件和更新托盘菜单
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
@@ -70,6 +72,11 @@ impl ProxyServer {
         // 创建故障转移切换管理器
         let failover_manager = Arc::new(FailoverSwitchManager::new(db.clone()));
 
+        // 创建 rolling context message store（复用数据库连接）
+        let message_store = Arc::new(
+            crate::proxy::context_roller::message_store::MessageStore::new(db.conn.clone()),
+        );
+
         let state = ProxyState {
             db,
             config: Arc::new(RwLock::new(config.clone())),
@@ -79,6 +86,7 @@ impl ProxyServer {
             provider_router,
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
+            message_store,
             app_handle,
             failover_manager,
         };

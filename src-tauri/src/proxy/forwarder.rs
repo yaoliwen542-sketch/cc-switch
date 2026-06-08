@@ -93,6 +93,8 @@ pub struct RequestForwarder {
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     gemini_shadow: Arc<GeminiShadowStore>,
     codex_chat_history: Arc<CodexChatHistoryStore>,
+    /// Rolling context message store，用于会话级消息历史管理和上下文窗口控制
+    message_store: Arc<crate::proxy::context_roller::message_store::MessageStore>,
     /// 故障转移切换管理器
     failover_manager: Arc<FailoverSwitchManager>,
     /// AppHandle，用于发射事件和更新托盘
@@ -175,6 +177,7 @@ impl RequestForwarder {
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
         gemini_shadow: Arc<GeminiShadowStore>,
         codex_chat_history: Arc<CodexChatHistoryStore>,
+        message_store: Arc<crate::proxy::context_roller::message_store::MessageStore>,
         failover_manager: Arc<FailoverSwitchManager>,
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
@@ -196,6 +199,7 @@ impl RequestForwarder {
             current_providers,
             gemini_shadow,
             codex_chat_history,
+            message_store,
             failover_manager,
             app_handle,
             current_provider_id_at_start,
@@ -1357,6 +1361,44 @@ impl RequestForwarder {
             }
         } else {
             mapped_body
+        };
+
+        // Apply rolling context if enabled for this provider
+        let request_body = if let Some(meta) = provider.meta.as_ref() {
+            if meta.rolling_context_active() {
+                let mut body = request_body;
+                match super::context_roller::apply(
+                    &mut body,
+                    &self.session_id,
+                    provider,
+                    &self.message_store,
+                ) {
+                    Ok(true) => {
+                        log::info!(
+                            "[RollingContext] Rolling context applied for session {}",
+                            self.session_id,
+                        );
+                    }
+                    Ok(false) => {
+                        log::debug!(
+                            "[RollingContext] Rolling context not needed for session {}",
+                            self.session_id,
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[RollingContext] Rolling context error for session {}: {}",
+                            self.session_id,
+                            e
+                        );
+                    }
+                }
+                body
+            } else {
+                request_body
+            }
+        } else {
+            request_body
         };
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
