@@ -196,6 +196,15 @@ export const providersApi = {
   async importHermesFromLive(): Promise<number> {
     return await invoke("import_hermes_providers_from_live");
   },
+
+  async getRollingContext(providerId: string, appId: AppId): Promise<{
+    contextWindow?: number;
+    rollingContextEnabled?: boolean;
+    rollingContextThreshold?: number;
+    rollingContextPreserveRounds?: number;
+  } | null> {
+    return await invoke("get_provider_rolling_context", { app: appId, providerId });
+  },
 };
 
 // ============================================================================

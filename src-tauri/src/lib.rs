@@ -1434,6 +1434,7 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+            commands::get_provider_rolling_context,
         ]);
 
     let app = builder
