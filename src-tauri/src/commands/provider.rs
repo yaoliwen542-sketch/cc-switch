@@ -847,6 +847,27 @@ pub fn get_opencode_live_provider_ids() -> Result<Vec<String>, String> {
 // OpenClaw 专属命令 → 已迁移至 commands/openclaw.rs
 // ============================================================================
 
+#[tauri::command]
+pub fn get_provider_rolling_context(
+    state: State<'_, AppState>,
+    app: String,
+    provider_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let providers = state.db.get_all_providers(&app).map_err(|e| e.to_string())?;
+    let provider = providers.get(&provider_id).ok_or("Provider not found")?;
+
+    let config = provider.meta.as_ref().map(|meta| {
+        serde_json::json!({
+            "contextWindow": meta.context_window,
+            "rollingContextEnabled": meta.rolling_context_enabled,
+            "rollingContextThreshold": meta.rolling_context_threshold,
+            "rollingContextPreserveRounds": meta.rolling_context_preserve_rounds,
+        })
+    });
+
+    Ok(config)
+}
+
 #[cfg(test)]
 mod import_claude_desktop_tests {
     use super::suggested_claude_desktop_routes;

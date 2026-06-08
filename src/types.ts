@@ -223,6 +223,11 @@ export interface ProviderMeta {
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
   githubAccountId?: string;
+  // 滚动上下文配置
+  contextWindow?: number;
+  rollingContextEnabled?: boolean;
+  rollingContextThreshold?: number;
+  rollingContextPreserveRounds?: number;
 }
 
 // Skill 同步方式

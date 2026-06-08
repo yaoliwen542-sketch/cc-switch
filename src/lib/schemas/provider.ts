@@ -55,6 +55,11 @@ export const providerSchema = z.object({
   // 图标配置
   icon: z.string().optional(),
   iconColor: z.string().optional(),
+  // 滚动上下文配置
+  contextWindow: z.number().optional(),
+  rollingContextEnabled: z.boolean().optional(),
+  rollingContextThreshold: z.number().min(0.1).max(0.99).optional(),
+  rollingContextPreserveRounds: z.number().min(1).optional(),
 });
 
 export type ProviderFormData = z.infer<typeof providerSchema>;

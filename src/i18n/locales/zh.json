@@ -170,6 +170,18 @@
         "oauthTitle": "OAuth 认证模式",
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
+      },
+      "contextWindow": "上下文窗口",
+      "contextWindowPlaceholder": "例如 200000",
+      "rollingContext": {
+        "title": "滚动上下文",
+        "enabled": "启用滚动上下文",
+        "enabledHint": "当接近上下文窗口限制时自动截断较早的消息",
+        "threshold": "压缩阈值",
+        "thresholdHint": "触发截断的上下文窗口比例（0.1-0.99）。默认：0.8",
+        "preserveRounds": "保留最近轮数",
+        "preserveRoundsHint": "保留完整的最近用户/助手对话轮数。默认：6",
+        "contextWindowHint": "模型的上下文窗口大小（token 数）"
       }
     }
   },

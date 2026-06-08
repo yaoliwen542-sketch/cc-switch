@@ -78,6 +78,7 @@ import {
   ProviderAdvancedConfig,
   type PricingModelSourceOption,
 } from "./ProviderAdvancedConfig";
+import { RollingContextFields } from "./RollingContextFields";
 import {
   useProviderCategory,
   useApiKeyState,
@@ -377,6 +378,10 @@ function ProviderFormFull({
                   : CLAUDE_DEFAULT_CONFIG,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
+      contextWindow: initialData?.meta?.contextWindow,
+      rollingContextEnabled: initialData?.meta?.rollingContextEnabled ?? false,
+      rollingContextThreshold: initialData?.meta?.rollingContextThreshold,
+      rollingContextPreserveRounds: initialData?.meta?.rollingContextPreserveRounds,
     }),
     [initialData, appId],
   );
@@ -1410,6 +1415,10 @@ function ProviderFormFull({
         supportsFullUrl && category !== "official" && localIsFullUrl
           ? true
           : undefined,
+      contextWindow: values.contextWindow,
+      rollingContextEnabled: values.rollingContextEnabled,
+      rollingContextThreshold: values.rollingContextThreshold,
+      rollingContextPreserveRounds: values.rollingContextPreserveRounds,
     };
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {
@@ -2314,6 +2323,8 @@ function ProviderFormFull({
                 onPricingConfigChange={setPricingConfig}
               />
             )}
+
+          <RollingContextFields form={form} />
 
           {showButtons && (
             <div className="flex justify-end gap-2">
