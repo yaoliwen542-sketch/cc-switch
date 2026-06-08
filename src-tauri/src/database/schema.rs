@@ -431,6 +431,11 @@ impl Database {
                         Self::migrate_v9_to_v10(conn)?;
                         Self::set_user_version(conn, 10)?;
                     }
+                    10 => {
+                        log::info!("迁移数据库从 v10 到 v11（添加滚动上下文表）");
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1197,6 +1202,55 @@ impl Database {
         }
 
         log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v10 -> v11 迁移：添加滚动上下文表
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rolling_context_sessions (
+                session_id TEXT PRIMARY KEY NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT,
+                context_window INTEGER,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                compression_count INTEGER DEFAULT 0,
+                last_active_at INTEGER,
+                created_at INTEGER DEFAULT (unixepoch())
+            );",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 rolling_context_sessions 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rcs_provider ON rolling_context_sessions(provider_id);",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 idx_rcs_provider 索引失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rolling_context_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                token_count INTEGER,
+                is_summary BOOLEAN DEFAULT 0,
+                created_at INTEGER DEFAULT (unixepoch()),
+                FOREIGN KEY (session_id) REFERENCES rolling_context_sessions(session_id)
+            );",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 rolling_context_messages 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rcm_session ON rolling_context_messages(session_id);",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 idx_rcm_session 索引失败: {e}")))?;
+
+        log::info!("v10 -> v11 迁移完成：已添加滚动上下文表");
         Ok(())
     }
 
