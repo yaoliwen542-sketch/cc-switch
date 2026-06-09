@@ -190,6 +190,17 @@ pub fn apply(
         compression_index: session.compression_count,
     };
 
+    log::info!(
+        "[RollingContext] apply() decision: was_truncated={} kind={:?} messages {}→{} tokens {}→{} target={}",
+        stats.was_truncated,
+        result.kind,
+        stats.messages_before,
+        stats.messages_after,
+        stats.tokens_before,
+        stats.tokens_after,
+        config.target_after(),
+    );
+
     // (9) Apply truncation if any
     if !stats.was_truncated {
         return Ok(Some(stats));
