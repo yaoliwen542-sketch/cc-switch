@@ -87,6 +87,12 @@ pub fn apply(
         _ => return Ok(None),
     };
 
+    log::info!(
+        "[RollingContext] apply() entered: session={} provider={} rolling_active=true",
+        session_id,
+        provider.id,
+    );
+
     // (2) Extract model name before mutably borrowing messages
     let model = body
         .get("model")
@@ -96,8 +102,20 @@ pub fn apply(
     // (3) Extract messages array
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(msgs) if !msgs.is_empty() => msgs,
-        _ => return Ok(None),
+        _ => {
+            log::info!(
+                "[RollingContext] apply() early return: no messages array or empty (session={})",
+                session_id,
+            );
+            return Ok(None);
+        }
     };
+
+    log::info!(
+        "[RollingContext] apply() messages count={} (session={})",
+        messages.len(),
+        session_id,
+    );
 
     // (4) Build rolling config
     let context_window = meta.context_window_or_default();
@@ -115,6 +133,17 @@ pub fn apply(
         Some(context_window),
     )?;
     let cumulative_before = session.total_input_tokens;
+    let trigger_limit = (context_window as f64 * config.threshold) as u64;
+
+    log::info!(
+        "[RollingContext] apply() session loaded: cumulative={} trigger={} (window={} threshold={}) session_id={} provider={}",
+        cumulative_before,
+        trigger_limit,
+        context_window,
+        config.threshold,
+        session_id,
+        provider.id,
+    );
 
     // (6) Estimate per-message tokens (for the truncate decision)
     let token_counts: Vec<u64> = messages.iter().map(|m| estimate_message_tokens(m).total()).collect();

@@ -674,6 +674,22 @@ async fn log_usage_internal(
         usage.cache_creation_tokens
     );
 
+    // 同步更新 rolling context（仅当 session_id 非空且有使用量）
+    if let Some(ref sid) = session_id {
+        if usage.input_tokens > 0 || usage.output_tokens > 0 {
+            if let Err(e) = context_roller::record_response_usage(
+                sid,
+                &state.message_store,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_creation_tokens,
+            ) {
+                log::debug!("[RollingContext] record_response_usage failed (streaming): {e}");
+            }
+        }
+    }
+
     if let Err(e) = logger.log_with_calculation(
         request_id,
         provider_id.to_string(),
