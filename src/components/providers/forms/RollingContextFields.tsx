@@ -26,12 +26,17 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
       <h3 className="font-medium text-sm">
         {t("provider.form.rollingContext.title")}
       </h3>
+      <p className="text-xs text-muted-foreground">
+        {t("provider.form.rollingContext.overviewHint")}
+      </p>
 
       {/* ---- Section 1: rolling-context (proxy mode) ---- */}
       <div className="space-y-4 pl-2 border-l-2 border-blue-500/30">
-        <p className="text-xs text-muted-foreground">
-          {t("provider.form.rollingContext.proxyModeHint")}
-        </p>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+            {t("provider.form.rollingContext.proxySectionTitle")}
+          </span>
+        </div>
 
         <FormField
           control={form.control}
@@ -64,7 +69,7 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>
-                    {t("provider.form.contextWindow")}
+                    {t("provider.form.rollingContext.contextWindowLabel")}
                   </FormLabel>
                   <FormControl>
                     <Input
@@ -157,9 +162,11 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
 
       {/* ---- Section 2: native auto-compact (direct mode fallback) ---- */}
       <div className="space-y-4 pl-2 border-l-2 border-amber-500/30">
-        <p className="text-xs text-muted-foreground">
-          {t("provider.form.rollingContext.nativeModeHint")}
-        </p>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            {t("provider.form.rollingContext.nativeSectionTitle")}
+          </span>
+        </div>
 
         <FormField
           control={form.control}
