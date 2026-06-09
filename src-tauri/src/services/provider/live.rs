@@ -33,6 +33,164 @@ pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     v
 }
 
+/// Inject Claude Code's native auto-compact env vars into the live config.
+///
+/// This is the **fallback path** used when rolling-context proxy mode is NOT
+/// enabled. Even without our proxy intercepting requests, Claude Code itself
+/// supports auto-compaction via two env vars:
+///
+/// - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` — percentage of context window at
+///   which Claude Code triggers its own /compact. Default is 95%. We lower
+///   this to 60% so compacts happen well before overflow (the "deadlock"
+///   we observed with Kimi/GLM/DeepSeek at 80–90% was Claude Code compacting
+///   too late for the upstream to handle gracefully).
+///
+/// - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` — the absolute context window in
+///   tokens that the auto-compact uses as its denominator. We pass the
+///   provider's configured `context_window` so the percentage is computed
+///   against the correct ceiling (especially important for MiniMax's 1M
+///   model vs Claude's 200K).
+///
+/// These env vars only take effect when the user is NOT going through
+/// cc-switch's proxy. When the proxy IS active, our rolling-context module
+/// does the compaction and we skip injection to avoid double-compaction.
+///
+/// We also inject a `cleanup_period_days` and `autoCompactEnabled` flag
+/// into the JSON config for the Claude Code desktop client to recognize.
+pub(crate) fn inject_native_auto_compact(
+    settings: &Value,
+    context_window: Option<u64>,
+    threshold_pct: Option<f64>,
+) -> Value {
+    let mut v = settings.clone();
+    if let Some(obj) = v.as_object_mut() {
+        // 1. Inject into env section
+        let env_obj = obj
+            .entry("env".to_string())
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(env_map) = env_obj.as_object_mut() {
+            // Lower the compact threshold (default 95 → 60 by default, or
+            // whatever the user configured in rolling context).
+            let pct = threshold_pct.unwrap_or(60.0).clamp(10.0, 99.0);
+            let pct_str = format!("{}", pct as u64);
+            env_map.insert(
+                "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".to_string(),
+                Value::String(pct_str),
+            );
+            if let Some(cw) = context_window {
+                env_map.insert(
+                    "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+                    Value::String(cw.to_string()),
+                );
+            }
+        }
+
+        // 2. Inject a top-level autoCompactEnabled flag so users can see
+        //    in the JSON that native auto-compact is configured.
+        obj.insert("autoCompactEnabled".to_string(), Value::Bool(true));
+        if let Some(cw) = context_window {
+            obj.insert(
+                "autoCompactWindow".to_string(),
+                Value::Number(cw.into()),
+            );
+        }
+    }
+    v
+}
+
+/// Decide whether to inject native auto-compact into the live config.
+///
+/// Returns true when:
+/// - rolling-context is **not** enabled on this provider (so our proxy won't
+///   intercept), AND
+/// - the provider has a `context_window` configured
+///
+/// In that case we fall back to Claude Code's own auto-compact, which
+/// prevents deadlocks when users run claude-code directly against the
+/// upstream API (bypassing the proxy).
+pub(crate) fn should_inject_native_auto_compact(meta: Option<&crate::provider::ProviderMeta>) -> bool {
+    match meta {
+        Some(m) if m.rolling_context_active() => false, // proxy handles it
+        Some(m) if m.context_window.is_some() => true,
+        _ => false, // no context_window known — don't inject
+    }
+}
+
+#[cfg(test)]
+mod native_auto_compact_tests {
+    use super::*;
+    use crate::provider::ProviderMeta;
+    use serde_json::json;
+
+    #[test]
+    fn injects_env_vars_when_meta_has_context_window() {
+        let input = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+                "ANTHROPIC_AUTH_TOKEN": "sk-xxx"
+            }
+        });
+        let out = inject_native_auto_compact(&input, Some(1_000_000), Some(60.0));
+        let env = out["env"].as_object().unwrap();
+        assert_eq!(env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "60");
+        assert_eq!(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "1000000");
+        // Existing env keys preserved
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "https://api.minimaxi.com/anthropic");
+        assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "sk-xxx");
+        // Top-level flag set
+        assert_eq!(out["autoCompactEnabled"], true);
+        assert_eq!(out["autoCompactWindow"], 1_000_000);
+    }
+
+    #[test]
+    fn default_threshold_is_60_when_unspecified() {
+        let input = json!({"env": {}});
+        let out = inject_native_auto_compact(&input, Some(200_000), None);
+        assert_eq!(out["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "60");
+    }
+
+    #[test]
+    fn threshold_clamps_to_valid_range() {
+        let input = json!({"env": {}});
+        // 5% below the 10% floor → clamps to 10
+        let out = inject_native_auto_compact(&input, Some(100_000), Some(5.0));
+        assert_eq!(out["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "10");
+        // 100% above the 99% ceiling → clamps to 99
+        let out = inject_native_auto_compact(&input, Some(100_000), Some(100.0));
+        assert_eq!(out["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "99");
+    }
+
+    #[test]
+    fn no_context_window_means_no_window_env_var() {
+        let input = json!({"env": {}});
+        let out = inject_native_auto_compact(&input, None, Some(60.0));
+        // No CLAUDE_CODE_AUTO_COMPACT_WINDOW injected
+        assert!(out["env"].get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
+    }
+
+    #[test]
+    fn should_inject_logic() {
+        // No meta → don't inject
+        assert!(!should_inject_native_auto_compact(None));
+        // Meta with no context_window → don't inject
+        let m = ProviderMeta::default();
+        assert!(!should_inject_native_auto_compact(Some(&m)));
+        // Meta with context_window but rolling off → inject
+        let m = ProviderMeta {
+            context_window: Some(100_000),
+            ..Default::default()
+        };
+        assert!(should_inject_native_auto_compact(Some(&m)));
+        // Meta with rolling ON → don't inject (proxy handles it)
+        let m = ProviderMeta {
+            context_window: Some(100_000),
+            rolling_context_enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(!should_inject_native_auto_compact(Some(&m)));
+    }
+}
+
 pub(crate) fn provider_exists_in_live_config(
     app_type: &AppType,
     provider_id: &str,
@@ -727,7 +885,26 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
     match app_type {
         AppType::Claude => {
             let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            let mut settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            // Fallback: if rolling-context is OFF but the provider has a
+            // context_window, inject Claude Code's native auto-compact env
+            // vars so the user still gets protected from the 80-90%
+            // deadlock when they bypass the proxy.
+            if should_inject_native_auto_compact(provider.meta.as_ref()) {
+                let meta = provider.meta.as_ref().unwrap();
+                let threshold = meta.rolling_context_threshold.map(|t| t * 100.0);
+                settings = inject_native_auto_compact(
+                    &settings,
+                    meta.context_window,
+                    threshold,
+                );
+                log::info!(
+                    "[Claude live] Injected native auto-compact for provider '{}' (context_window={:?}, threshold={:?}%)",
+                    provider.id,
+                    meta.context_window,
+                    threshold,
+                );
+            }
             write_json_file(&path, &settings)?;
         }
         AppType::ClaudeDesktop => {
