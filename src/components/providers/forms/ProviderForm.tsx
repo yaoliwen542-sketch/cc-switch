@@ -382,6 +382,9 @@ function ProviderFormFull({
       rollingContextEnabled: initialData?.meta?.rollingContextEnabled ?? false,
       rollingContextThreshold: initialData?.meta?.rollingContextThreshold,
       rollingContextPreserveRounds: initialData?.meta?.rollingContextPreserveRounds,
+      nativeAutoCompactEnabled: initialData?.meta?.nativeAutoCompactEnabled ?? false,
+      nativeAutoCompactPct: initialData?.meta?.nativeAutoCompactPct,
+      nativeAutoCompactWindow: initialData?.meta?.nativeAutoCompactWindow,
     }),
     [initialData, appId],
   );
@@ -1419,6 +1422,9 @@ function ProviderFormFull({
       rollingContextEnabled: values.rollingContextEnabled,
       rollingContextThreshold: values.rollingContextThreshold,
       rollingContextPreserveRounds: values.rollingContextPreserveRounds,
+      nativeAutoCompactEnabled: values.nativeAutoCompactEnabled,
+      nativeAutoCompactPct: values.nativeAutoCompactPct,
+      nativeAutoCompactWindow: values.nativeAutoCompactWindow,
     };
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {
