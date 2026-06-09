@@ -174,14 +174,23 @@
       "contextWindow": "上下文窗口",
       "contextWindowPlaceholder": "例如 200000",
       "rollingContext": {
-        "title": "滚动上下文",
-        "enabled": "启用滚动上下文",
-        "enabledHint": "当接近上下文窗口限制时自动截断较早的消息",
+        "title": "上下文管理",
+        "proxyModeHint": "路由模式：cc-switch 拦截请求，在接近上下文窗口限制时自动压缩历史记录",
+        "enabled": "启用滚动上下文（路由模式）",
+        "enabledHint": "路由模式：cc-switch 在代理层截断较早的消息。需要代理服务已启动。",
         "threshold": "压缩阈值",
         "thresholdHint": "触发截断的上下文窗口比例（0.1-0.99）。默认：0.8",
         "preserveRounds": "保留最近轮数",
         "preserveRoundsHint": "保留完整的最近用户/助手对话轮数。默认：6",
-        "contextWindowHint": "模型的上下文窗口大小（token 数）"
+        "contextWindowHint": "模型的上下文窗口大小（token 数）",
+        "nativeModeHint": "原生模式（直连）：Claude Code 自带的 auto-compact，写入此供应商的 settings.json。路由关闭或请求绕过 cc-switch 时使用。",
+        "nativeEnabled": "启用原生自动压缩（直连模式）",
+        "nativeEnabledHint": "路由关闭时，Claude Code 的 /compact 提前触发（默认 60% 而非 95%），防止上游供应商死锁。",
+        "nativeConfigHint": "Claude Code 从该供应商的 settings.json 读取这些环境变量来决定何时压缩。",
+        "nativePct": "压缩触发百分比",
+        "nativePctHint": "上下文窗口的百分比触发 /compact（10-99）。默认：60。越低 = 越早压缩 = 越安全。",
+        "nativeWindow": "上下文窗口（token 数）",
+        "nativeWindowHint": "Claude Code 用作分母的上下文窗口。如留空，则使用上方的上下文窗口值。"
       }
     }
   },
