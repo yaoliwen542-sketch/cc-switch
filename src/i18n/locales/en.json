@@ -173,24 +173,15 @@
       },
       "contextWindow": "Context Window",
       "contextWindowPlaceholder": "e.g. 200000",
-      "rollingContext": {
-<<<<<<< HEAD
-        "title": "Rolling Context",
-        "enabled": "Enable Rolling Context",
-        "enabledHint": "Automatically truncate older messages when approaching the context window limit",
-=======
+            "rollingContext": {
         "title": "Context Management",
         "proxyModeHint": "Proxy mode: cc-switch intercepts requests and compresses history automatically when approaching the context window limit",
         "enabled": "Enable Rolling Context (Proxy Mode)",
         "enabledHint": "Proxy mode: cc-switch truncates older messages in the proxy layer. Requires proxy to be active.",
->>>>>>> worktree-rolling-context
         "threshold": "Compression Threshold",
         "thresholdHint": "Ratio of context window (0.1-0.99) at which to trigger truncation. Default: 0.8",
         "preserveRounds": "Preserve Recent Rounds",
         "preserveRoundsHint": "Number of recent user/assistant exchanges to keep in full. Default: 6",
-<<<<<<< HEAD
-        "contextWindowHint": "Model's context window size in tokens"
-=======
         "contextWindowHint": "Model's context window size in tokens",
         "nativeModeHint": "Native mode (fallback): Claude Code's own auto-compact, written to this provider's settings.json. Used when proxy is OFF or request bypasses cc-switch.",
         "nativeEnabled": "Enable Native Auto-Compact (Direct Mode)",
@@ -200,7 +191,6 @@
         "nativePctHint": "Percentage of context window to trigger /compact (10-99). Default: 60. Lower = compact earlier = safer.",
         "nativeWindow": "Context Window (tokens)",
         "nativeWindowHint": "The context window Claude Code uses as denominator. If empty, uses Context Window above."
->>>>>>> worktree-rolling-context
       }
     }
   },

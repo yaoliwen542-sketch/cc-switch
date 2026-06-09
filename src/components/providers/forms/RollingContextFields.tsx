@@ -18,12 +18,9 @@ interface RollingContextFieldsProps {
 
 export function RollingContextFields({ form }: RollingContextFieldsProps) {
   const { t } = useTranslation();
-<<<<<<< HEAD
   const enabled = form.watch("rollingContextEnabled");
-=======
   const rollingEnabled = form.watch("rollingContextEnabled");
   const nativeEnabled = form.watch("nativeAutoCompactEnabled");
->>>>>>> worktree-rolling-context
 
   return (
     <div className="space-y-4 border rounded-lg p-4">
@@ -31,7 +28,6 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
         {t("provider.form.rollingContext.title")}
       </h3>
 
-<<<<<<< HEAD
       <FormField
         control={form.control}
         name="rollingContextEnabled"
@@ -144,7 +140,6 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
           />
         </>
       )}
-=======
       {/* ---- Section 1: rolling-context (proxy mode) ---- */}
       <div className="space-y-4 pl-2 border-l-2 border-blue-500/30">
         <p className="text-xs text-muted-foreground">
@@ -390,7 +385,6 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
           </div>
         )}
       </div>
->>>>>>> worktree-rolling-context
     </div>
   );
 }
