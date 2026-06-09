@@ -205,7 +205,71 @@ export const providersApi = {
   } | null> {
     return await invoke("get_provider_rolling_context", { app: appId, providerId });
   },
+
+  /**
+   * List all rolling-context sessions (across providers), most recent first.
+   * Each entry includes utilization ratio (current / context_window, 0-1).
+   */
+  async listRollingSessions(): Promise<RollingSessionInfo[]> {
+    return await invoke("list_rolling_sessions");
+  },
+
+  /**
+   * Get compression history for a single session, most recent first.
+   * Returns events with `tokensBefore`, `tokensAfter`, `messagesRemoved`, etc.
+   */
+  async getRollingCompressionHistory(
+    sessionId: string,
+    limit?: number,
+  ): Promise<RollingCompressionEvent[]> {
+    return await invoke("get_rolling_compression_history", {
+      sessionId,
+      limit: limit ?? 20,
+    });
+  },
+
+  /** Reset cumulative token counts for a session. */
+  async resetRollingSession(sessionId: string): Promise<void> {
+    return await invoke("reset_rolling_session", { sessionId });
+  },
+
+  /**
+   * Enforce a global session cap by deleting LRU sessions.
+   * Returns the list of evicted session IDs.
+   */
+  async cleanupRollingSessions(maxSessions?: number): Promise<string[]> {
+    return await invoke("cleanup_rolling_sessions", { maxSessions });
+  },
 };
+
+export interface RollingSessionInfo {
+  sessionId: string;
+  providerId: string;
+  model: string | null;
+  contextWindow: number | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  compressionCount: number;
+  tokensSaved: number;
+  /** 0.0–1.0; null when context_window is unknown. */
+  utilization: number | null;
+  lastActiveAt: number | null;
+  createdAt: number | null;
+}
+
+export interface RollingCompressionEvent {
+  id: number | null;
+  trigger: string;
+  tokensBefore: number;
+  tokensAfter: number;
+  messagesRemoved: number;
+  messagesSummarized: number;
+  tokensSaved: number;
+  summaryText: string | null;
+  createdAt: number | null;
+}
 
 // ============================================================================
 // 统一供应商（Universal Provider）API

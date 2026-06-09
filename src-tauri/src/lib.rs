@@ -1435,6 +1435,10 @@ pub fn run() {
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
             commands::get_provider_rolling_context,
+            commands::list_rolling_sessions,
+            commands::get_rolling_compression_history,
+            commands::reset_rolling_session,
+            commands::cleanup_rolling_sessions,
         ]);
 
     let app = builder

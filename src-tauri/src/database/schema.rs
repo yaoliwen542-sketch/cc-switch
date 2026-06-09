@@ -1205,17 +1205,24 @@ impl Database {
         Ok(())
     }
 
-    /// v10 -> v11 迁移：添加滚动上下文表
+    /// v10 -> v11 迁移：添加滚动上下文表（含累积 token、压缩审计、摘要源追踪）
     fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        // 主表：累积 token 来自上游响应的 usage，是触发截断的真实依据
         conn.execute(
             "CREATE TABLE IF NOT EXISTS rolling_context_sessions (
                 session_id TEXT PRIMARY KEY NOT NULL,
                 provider_id TEXT NOT NULL,
                 model TEXT,
                 context_window INTEGER,
-                total_input_tokens INTEGER DEFAULT 0,
-                total_output_tokens INTEGER DEFAULT 0,
-                compression_count INTEGER DEFAULT 0,
+                -- 来自上游 usage.input_tokens 的真实累计（不是启发式估算）
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                -- Anthropic prompt caching 字段
+                total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                -- 压缩审计
+                compression_count INTEGER NOT NULL DEFAULT 0,
+                tokens_saved INTEGER NOT NULL DEFAULT 0,
                 last_active_at INTEGER,
                 created_at INTEGER DEFAULT (unixepoch())
             );",
@@ -1230,6 +1237,13 @@ impl Database {
         .map_err(|e| AppError::Database(format!("创建 idx_rcs_provider 索引失败: {e}")))?;
 
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rcs_last_active ON rolling_context_sessions(last_active_at DESC);",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 idx_rcs_last_active 索引失败: {e}")))?;
+
+        // 消息历史表
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS rolling_context_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
@@ -1237,6 +1251,8 @@ impl Database {
                 content TEXT NOT NULL,
                 token_count INTEGER,
                 is_summary BOOLEAN DEFAULT 0,
+                -- 摘要消息引用被它替换的消息 ID（JSON 数组）
+                summary_source_ids TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER DEFAULT (unixepoch()),
                 FOREIGN KEY (session_id) REFERENCES rolling_context_sessions(session_id)
             );",
@@ -1250,7 +1266,37 @@ impl Database {
         )
         .map_err(|e| AppError::Database(format!("创建 idx_rcm_session 索引失败: {e}")))?;
 
-        log::info!("v10 -> v11 迁移完成：已添加滚动上下文表");
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rcm_created ON rolling_context_messages(session_id, created_at);",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 idx_rcm_created 索引失败: {e}")))?;
+
+        // 压缩审计表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rolling_context_compressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                tokens_before INTEGER NOT NULL,
+                tokens_after INTEGER NOT NULL,
+                messages_removed INTEGER NOT NULL DEFAULT 0,
+                messages_summarized INTEGER NOT NULL DEFAULT 0,
+                summary_text TEXT,
+                created_at INTEGER DEFAULT (unixepoch()),
+                FOREIGN KEY (session_id) REFERENCES rolling_context_sessions(session_id)
+            );",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 rolling_context_compressions 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rcc_session ON rolling_context_compressions(session_id, created_at DESC);",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 idx_rcc_session 索引失败: {e}")))?;
+
+        log::info!("v10 -> v11 迁移完成：已添加滚动上下文表（含累积 token 和压缩审计）");
         Ok(())
     }
 
