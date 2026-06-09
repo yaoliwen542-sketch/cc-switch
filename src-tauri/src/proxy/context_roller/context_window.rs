@@ -171,22 +171,25 @@ pub fn apply_sliding_window(
     let mut kept_tokens: u64 = 0;
     let mut removed = 0usize;
 
-    // Strategy: greedily keep from the **end** (most recent) first, then
-    // fill forward, but only include non-preserved if they fit under the target.
+    // Strategy: When cumulative exceeds the trigger, we need to reset.
+    // The upstream provider sees ALL tokens in the session history, so we can't
+    // just truncate the body — we must reduce the *cumulative* counter.
     //
-    // Concretely:
-    // - Pre-compute preserved token total
-    // - Then for each non-preserved message (oldest first), keep it ONLY IF
-    //   adding it keeps us under `target`.
+    // Approach: keep only preserved messages (system + last N rounds),
+    // drop everything else. The reset_cumulative_tokens() call after
+    // truncation will zero out the running total, so the next upstream
+    // response's usage.input_tokens becomes the new baseline.
+    //
+    // Key insight: the body itself is small (current request only).
+    // The trigger is about CUMULATIVE upstream usage, not body size.
+    // So we truncate to just preserved, and reset cumulative.
     let preserved_tokens: u64 = token_counts
         .iter()
         .enumerate()
         .filter(|(i, _)| preserve_indices.contains(i))
         .map(|(_, &t)| t)
         .sum();
-    kept_tokens = preserved_tokens;
 
-    // First, output preserved messages in order
     let mut result: Vec<Option<Value>> = vec![None; messages.len()];
     for (i, msg) in messages.iter().enumerate() {
         if preserve_indices.contains(&i) {
@@ -194,21 +197,8 @@ pub fn apply_sliding_window(
         }
     }
 
-    // Then, fill in non-preserved (oldest first) if there's headroom
-    for (i, (msg, &tokens)) in messages.iter().zip(token_counts.iter()).enumerate() {
-        if preserve_indices.contains(&i) {
-            continue;
-        }
-        if kept_tokens + tokens <= target {
-            result[i] = Some(msg.clone());
-            kept_tokens += tokens;
-        } else {
-            removed += 1;
-        }
-    }
-
-    // Flatten in original order
     let final_messages: Vec<Value> = result.into_iter().flatten().collect();
+    let removed = messages.len() - final_messages.len();
     let final_count = final_messages.len();
 
     let kind = if removed > 0 {
@@ -222,7 +212,7 @@ pub fn apply_sliding_window(
         kind,
         removed_count: removed,
         cumulative_before: cumulative_usage,
-        cumulative_after: kept_tokens,
+        cumulative_after: preserved_tokens,
         final_message_count: final_count,
         summary_message_id: None,
     }
@@ -303,11 +293,11 @@ mod tests {
         // cumulative = 900 (> 800 trigger)
         let result = apply_sliding_window(&msgs, &tokens, 900, &config());
         assert_eq!(result.kind, CompressionKind::Truncation);
-        // We aim for target=600 (60% of 1000)
-        // preserved: system (100) + last 4 (400) = 500
-        // Can keep 1 more from middle (100) → 600 exactly
-        assert!(result.cumulative_after <= 600);
+        // preserved: system (100) + last 4 rounds (400) = 500
+        assert!(result.cumulative_after <= 500);
         assert!(result.removed_count > 0);
+        // Should keep system + last 4 = 5 messages
+        assert_eq!(result.final_message_count, 5);
     }
 
     #[test]
