@@ -1373,13 +1373,17 @@ impl RequestForwarder {
                     provider,
                     &self.message_store,
                 ) {
-                    Ok(true) => {
+                    Ok(Some(stats)) if stats.was_truncated => {
                         log::info!(
-                            "[RollingContext] Rolling context applied for session {}",
+                            "[RollingContext] Rolling context applied for session {} ({} -> {} msgs, cumulative {} tokens, {}% of window)",
                             self.session_id,
+                            stats.messages_before,
+                            stats.messages_after,
+                            stats.cumulative_before,
+                            (stats.cumulative_before * 100) / meta.context_window_or_default().max(1),
                         );
                     }
-                    Ok(false) => {
+                    Ok(_) => {
                         log::debug!(
                             "[RollingContext] Rolling context not needed for session {}",
                             self.session_id,

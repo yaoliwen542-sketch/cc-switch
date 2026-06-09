@@ -868,6 +868,108 @@ pub fn get_provider_rolling_context(
     Ok(config)
 }
 
+/// List all rolling-context sessions, ordered by last activity. Returns an
+/// array of `RollingSessionInfo` enriched with utilization ratios.
+#[tauri::command]
+pub fn list_rolling_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::proxy::context_roller::message_store::MessageStore;
+    let conn = state.db.conn.clone();
+    let store = MessageStore::new(conn);
+    let sessions = store.list_sessions().map_err(|e| e.to_string())?;
+    Ok(sessions
+        .iter()
+        .map(|s| {
+            let utilization = s.utilization();
+            serde_json::json!({
+                "sessionId": s.session_id,
+                "providerId": s.provider_id,
+                "model": s.model,
+                "contextWindow": s.context_window,
+                "totalInputTokens": s.total_input_tokens,
+                "totalOutputTokens": s.total_output_tokens,
+                "totalCacheReadTokens": s.total_cache_read_tokens,
+                "totalCacheCreationTokens": s.total_cache_creation_tokens,
+                "compressionCount": s.compression_count,
+                "tokensSaved": s.tokens_saved,
+                "utilization": utilization.as_ref().map(|(_, _, r)| (r * 100.0).round() / 100.0),
+                "lastActiveAt": s.last_active_at,
+                "createdAt": s.created_at,
+            })
+        })
+        .collect())
+}
+
+/// Get compression history for a single session. Returns up to `limit` events
+/// (most recent first) with the count of messages removed and tokens saved.
+#[tauri::command]
+pub fn get_rolling_compression_history(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    use crate::proxy::context_roller::message_store::MessageStore;
+    let conn = state.db.conn.clone();
+    let store = MessageStore::new(conn);
+    let events = store
+        .get_compression_history(&session_id, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())?;
+    Ok(events
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "trigger": e.trigger,
+                "tokensBefore": e.tokens_before,
+                "tokensAfter": e.tokens_after,
+                "messagesRemoved": e.messages_removed,
+                "messagesSummarized": e.messages_summarized,
+                "tokensSaved": e.tokens_before.saturating_sub(e.tokens_after),
+                "summaryText": e.summary_text,
+                "createdAt": e.created_at,
+            })
+        })
+        .collect())
+}
+
+/// Reset a single session's rolling context state. Useful when switching
+/// providers or when the user wants to "start fresh".
+#[tauri::command]
+pub fn reset_rolling_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    use crate::proxy::context_roller::message_store::MessageStore;
+    let conn = state.db.conn.clone();
+    let store = MessageStore::new(conn);
+    store.reset_cumulative_tokens(&session_id).map_err(|e| e.to_string())?;
+    log::info!("[RollingContext] Reset session {session_id}");
+    Ok(())
+}
+
+/// Enforce the global session cap (deletes LRU sessions). Called periodically
+/// by the proxy or on demand.
+#[tauri::command]
+pub fn cleanup_rolling_sessions(
+    state: State<'_, AppState>,
+    max_sessions: Option<i64>,
+) -> Result<Vec<String>, String> {
+    use crate::proxy::context_roller::message_store::{MessageStore, MAX_SESSIONS};
+    let conn = state.db.conn.clone();
+    let store = MessageStore::new(conn);
+    let max = max_sessions.unwrap_or(MAX_SESSIONS);
+    let victims = store.enforce_session_cap(max).map_err(|e| e.to_string())?;
+    if !victims.is_empty() {
+        log::info!(
+            "[RollingContext] Evicted {} LRU sessions (cap={})",
+            victims.len(),
+            max
+        );
+    }
+    Ok(victims)
+}
+
 #[cfg(test)]
 mod import_claude_desktop_tests {
     use super::suggested_claude_desktop_routes;
