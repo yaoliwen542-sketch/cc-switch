@@ -38,6 +38,12 @@ pub fn apply(
         return Ok(false);
     }
 
+    // Get model name before borrowing messages mutably
+    let model = body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
+
     // Extract messages array
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(msgs) if !msgs.is_empty() => msgs,
@@ -55,12 +61,6 @@ pub fn apply(
         threshold,
         preserve_rounds,
     };
-
-    // Get or create session record
-    let model = body
-        .get("model")
-        .and_then(|m| m.as_str())
-        .map(|s| s.to_string());
     let _session = store.get_or_create_session(
         session_id,
         &provider.id,

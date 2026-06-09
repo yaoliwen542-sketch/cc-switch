@@ -1,5 +1,6 @@
 //! SQLite-backed message store for rolling context sessions.
 
+use rusqlite::OptionalExtension;
 use std::sync::{Arc, Mutex};
 
 /// Session metadata stored in the database.
@@ -81,7 +82,7 @@ impl MessageStore {
             let now = chrono::Utc::now().timestamp();
             conn.execute(
                 "UPDATE rolling_context_sessions SET last_active_at = ?1 WHERE session_id = ?2",
-                [now, session_id],
+                rusqlite::params![now, session_id],
             )
             .map_err(|e| e.to_string())?;
             return Ok(session);
@@ -184,7 +185,7 @@ impl MessageStore {
 
     /// Delete oldest messages for a session, keeping the last N.
     pub fn delete_oldest_messages(&self, session_id: &str, keep_count: usize) -> Result<u64, String> {
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         // First, count total messages
         let total: i64 = conn
@@ -260,7 +261,7 @@ impl MessageStore {
              SET compression_count = compression_count + 1,
                  last_active_at = ?1
              WHERE session_id = ?2",
-            [chrono::Utc::now().timestamp(), session_id],
+            rusqlite::params![chrono::Utc::now().timestamp(), session_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -497,6 +498,8 @@ mod tests {
     fn list_sessions_ordered_by_activity() {
         let store = in_memory_store();
         store.get_or_create_session("sess-a", "prov-1", None, None).unwrap();
+        // Force a 1s time difference (last_active_at is stored as i64 seconds)
+        std::thread::sleep(std::time::Duration::from_secs(1));
         store.get_or_create_session("sess-b", "prov-2", None, None).unwrap();
 
         let sessions = store.list_sessions().unwrap();
