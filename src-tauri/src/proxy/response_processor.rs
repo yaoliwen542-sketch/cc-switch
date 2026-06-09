@@ -3,6 +3,7 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
+    context_roller,
     forwarder::ActiveConnectionGuard,
     handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
@@ -576,6 +577,25 @@ fn spawn_log_usage(
     status_code: u16,
     is_streaming: bool,
 ) {
+    // Rolling context: feed upstream-reported usage into our session store.
+    // We do this *synchronously* here (before spawning the log task) because
+    // the `usage` value gets moved into the spawned task, and we still need
+    // its fields to update rolling-context. This is the second half of the
+    // rolling-context loop: the next `apply()` call will use the updated
+    // cumulative count to decide whether to truncate.
+    if !ctx.session_id.is_empty() && (usage.input_tokens > 0 || usage.output_tokens > 0) {
+        if let Err(e) = context_roller::record_response_usage(
+            &ctx.session_id,
+            &state.message_store,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+        ) {
+            log::debug!("[RollingContext] record_response_usage failed: {e}");
+        }
+    }
+
     // Check enable_logging before spawning the log task
     if let Ok(config) = state.config.try_read() {
         if !config.enable_logging {
