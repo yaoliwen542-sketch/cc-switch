@@ -111,13 +111,14 @@ pub fn apply_sliding_window(
     // Ensure messages stay in original order
     // (the loop above preserves order naturally)
 
+    let final_count = kept_messages.len();
     RollingResult {
         messages: kept_messages,
         was_truncated: removed > 0,
         removed_count: removed,
         tokens_before: total_tokens,
         tokens_after: kept_tokens,
-        final_message_count: kept_messages.len(),
+        final_message_count: final_count,
     }
 }
 
@@ -172,9 +173,13 @@ mod tests {
         };
         let result = apply_sliding_window(&msgs, &tokens, &config);
         assert!(result.was_truncated);
-        // Should keep system (1) + last 4 (user+assistant rounds) + maybe some in between
+        // Should remove at least 1 of the 5 non-preserved messages
+        assert!(result.removed_count > 0);
+        // The non-preserved messages that are too old should be removed
         assert!(result.final_message_count < 10);
-        assert!(result.tokens_after <= 400);
+        // System + last 4 preserved messages = 5 messages, 500 tokens
+        // (preserved messages are kept even if they exceed trigger_limit)
+        assert!(result.final_message_count >= 5);
     }
 
     #[test]
