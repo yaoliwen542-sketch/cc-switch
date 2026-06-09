@@ -382,6 +382,12 @@ function ProviderFormFull({
       rollingContextEnabled: initialData?.meta?.rollingContextEnabled ?? false,
       rollingContextThreshold: initialData?.meta?.rollingContextThreshold,
       rollingContextPreserveRounds: initialData?.meta?.rollingContextPreserveRounds,
+<<<<<<< HEAD
+=======
+      nativeAutoCompactEnabled: initialData?.meta?.nativeAutoCompactEnabled ?? false,
+      nativeAutoCompactPct: initialData?.meta?.nativeAutoCompactPct,
+      nativeAutoCompactWindow: initialData?.meta?.nativeAutoCompactWindow,
+>>>>>>> worktree-rolling-context
     }),
     [initialData, appId],
   );
@@ -1419,6 +1425,12 @@ function ProviderFormFull({
       rollingContextEnabled: values.rollingContextEnabled,
       rollingContextThreshold: values.rollingContextThreshold,
       rollingContextPreserveRounds: values.rollingContextPreserveRounds,
+<<<<<<< HEAD
+=======
+      nativeAutoCompactEnabled: values.nativeAutoCompactEnabled,
+      nativeAutoCompactPct: values.nativeAutoCompactPct,
+      nativeAutoCompactWindow: values.nativeAutoCompactWindow,
+>>>>>>> worktree-rolling-context
     };
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {

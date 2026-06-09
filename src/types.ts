@@ -228,6 +228,13 @@ export interface ProviderMeta {
   rollingContextEnabled?: boolean;
   rollingContextThreshold?: number;
   rollingContextPreserveRounds?: number;
+<<<<<<< HEAD
+=======
+  // 原生 auto-compact fallback（路由关闭时使用，写入 ~/.claude/settings.json）
+  nativeAutoCompactEnabled?: boolean;
+  nativeAutoCompactPct?: number;
+  nativeAutoCompactWindow?: number;
+>>>>>>> worktree-rolling-context
 }
 
 // Skill 同步方式

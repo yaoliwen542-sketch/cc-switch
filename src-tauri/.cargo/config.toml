@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-lwinpthread", "-C", "link-arg=-lws2_32", "-C", "link-arg=-lbcrypt", "-C", "link-arg=-luserenv"]
