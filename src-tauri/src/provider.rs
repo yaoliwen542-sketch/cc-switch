@@ -492,6 +492,19 @@ pub struct ProviderMeta {
     /// 保留最近几轮完整对话（默认 6）
     #[serde(rename = "rollingContextPreserveRounds", skip_serializing_if = "Option::is_none")]
     pub rolling_context_preserve_rounds: Option<u32>,
+
+    /// 是否启用 Claude Code 原生 auto-compact 作为 fallback
+    /// （路由关闭时使用，写入 settings.json 的 env）
+    #[serde(rename = "nativeAutoCompactEnabled", skip_serializing_if = "Option::is_none")]
+    pub native_auto_compact_enabled: Option<bool>,
+
+    /// 原生 auto-compact 触发百分比（10-99）
+    #[serde(rename = "nativeAutoCompactPct", skip_serializing_if = "Option::is_none")]
+    pub native_auto_compact_pct: Option<u32>,
+
+    /// 原生 auto-compact 使用的 context window 大小（token）
+    #[serde(rename = "nativeAutoCompactWindow", skip_serializing_if = "Option::is_none")]
+    pub native_auto_compact_window: Option<u64>,
 }
 
 impl ProviderMeta {

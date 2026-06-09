@@ -110,9 +110,14 @@ pub(crate) fn inject_native_auto_compact(
 /// upstream API (bypassing the proxy).
 pub(crate) fn should_inject_native_auto_compact(meta: Option<&crate::provider::ProviderMeta>) -> bool {
     match meta {
-        Some(m) if m.rolling_context_active() => false, // proxy handles it
-        Some(m) if m.context_window.is_some() => true,
-        _ => false, // no context_window known — don't inject
+        // If rolling-context proxy is active, proxy handles compaction
+        Some(m) if m.rolling_context_active() => false,
+        // Otherwise: only inject if user explicitly enabled native auto-compact
+        // for this provider (via the ProviderForm UI). We do NOT auto-enable
+        // for every provider with context_window, because some users don't
+        // want Claude Code's auto-compact interfering with their workflow.
+        Some(m) if m.native_auto_compact_enabled.unwrap_or(false) => true,
+        _ => false,
     }
 }
 
@@ -886,23 +891,29 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
         AppType::Claude => {
             let path = get_claude_settings_path();
             let mut settings = sanitize_claude_settings_for_live(&provider.settings_config);
-            // Fallback: if rolling-context is OFF but the provider has a
-            // context_window, inject Claude Code's native auto-compact env
-            // vars so the user still gets protected from the 80-90%
-            // deadlock when they bypass the proxy.
+            // Per-provider native auto-compact fallback (when proxy is off).
+            // If rolling-context is OFF AND user has enabled native auto-compact
+            // for this specific provider, inject the two env vars into
+            // settings.json so Claude Code's own /compact fires earlier
+            // (60% by default, configurable per-provider) — this is the
+            // safety net for direct-to-upstream mode (bypassing the proxy).
             if should_inject_native_auto_compact(provider.meta.as_ref()) {
                 let meta = provider.meta.as_ref().unwrap();
-                let threshold = meta.rolling_context_threshold.map(|t| t * 100.0);
-                settings = inject_native_auto_compact(
-                    &settings,
-                    meta.context_window,
-                    threshold,
-                );
+                // Prefer the dedicated native_auto_compact_window, fall back
+                // to context_window. The dedicated field is what the user
+                // explicitly sets in the provider form.
+                let window = meta
+                    .native_auto_compact_window
+                    .or(meta.context_window);
+                // Default 60% if not specified (matches the original
+                // 81%-deadlock fix).
+                let pct = meta.native_auto_compact_pct.unwrap_or(60);
+                settings = inject_native_auto_compact(&settings, window, Some(pct as f64));
                 log::info!(
-                    "[Claude live] Injected native auto-compact for provider '{}' (context_window={:?}, threshold={:?}%)",
+                    "[Claude live] Injected native auto-compact for provider '{}' (window={:?}, threshold={}%)",
                     provider.id,
-                    meta.context_window,
-                    threshold,
+                    window,
+                    pct,
                 );
             }
             write_json_file(&path, &settings)?;
