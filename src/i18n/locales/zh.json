@@ -185,6 +185,8 @@
         "thresholdHint": "触发自动压缩的上下文窗口比例（0.1-0.99）。默认：0.8",
         "preserveRounds": "保留最近轮数",
         "preserveRoundsHint": "保留完整的最近用户/助手对话轮数（系统提示始终保留）。默认：6",
+        "target": "压缩后目标比例",
+        "targetHint": "压缩后目标上下文窗口比例（0.1-0.95）。越低 = 压缩越激进。默认：0.6",
         "nativeSectionTitle": "直连模式（路由关闭时）",
         "nativeEnabled": "启用 Claude Code 原生自动压缩",
         "nativeEnabledHint": "路由关闭时，Claude Code 的 /compact 提前触发（默认 60% 而非 95%），防止上游供应商死锁。",

@@ -78,6 +78,8 @@ pub struct RollingConfig {
     pub threshold: f64,
     /// Number of recent message rounds to always preserve.
     pub preserve_rounds: u32,
+    /// Target ratio after compression (0.1-0.9). Default 0.6.
+    pub target_after: f64,
 }
 
 impl RollingConfig {
@@ -86,11 +88,9 @@ impl RollingConfig {
         ((self.context_window as f64) * self.threshold) as u64
     }
 
-    /// Target token count after truncation. We aim for `target` not `trigger_limit`
-    /// so we don't fire on every single request right at the boundary.
-    pub fn target_after(&self) -> u64 {
-        // Aim for 60% of the window after truncation — gives us headroom.
-        ((self.context_window as f64) * 0.6) as u64
+    /// Target token count after truncation.
+    pub fn target_after_tokens(&self) -> u64 {
+        ((self.context_window as f64) * self.target_after) as u64
     }
 }
 
@@ -124,17 +124,21 @@ pub fn apply_sliding_window(
         };
     }
 
-    // Determine which indices to preserve
+    // Use HashSet for O(1) membership checks
     let mut preserve_indices = std::collections::HashSet::new();
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // (1) Always keep system/developer message at idx 0
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if let Some(first) = messages.first() {
         if is_system_message(first) {
             preserve_indices.insert(0);
         }
     }
 
-    // (2) Always keep last N rounds of user/assistant, plus their tool pairs
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (2) Always keep last N rounds of user/assistant
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let rounds_to_preserve = config.preserve_rounds as usize;
     let mut kept_rounds: Vec<usize> = Vec::new();
     for (i, msg) in messages.iter().enumerate().rev() {
@@ -147,27 +151,36 @@ pub fn apply_sliding_window(
             kept_rounds.push(i);
         }
     }
-    // Also keep any tool messages (tool results) that come immediately after
-    // preserved assistant messages with tool_calls. They form a logical unit.
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (3) Preserve tool pairs: for each preserved assistant with tool_calls,
+    //     keep ALL following tool results (handles parallel tool calls)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     for &i in &kept_rounds {
         if let Some(msg) = messages.get(i) {
             if msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
                 && msg.get("tool_calls").is_some()
             {
-                // The next message is likely the tool result — keep it
-                if let Some(next) = messages.get(i + 1) {
+                // Scan forward from this assistant, keeping all consecutive tool results
+                let mut j = i + 1;
+                while let Some(next) = messages.get(j) {
                     if next.get("role").and_then(|r| r.as_str()) == Some("tool") {
-                        preserve_indices.insert(i + 1);
+                        preserve_indices.insert(j);
+                        j += 1;
+                    } else {
+                        break;
                     }
                 }
             }
         }
     }
 
-    // (2.5) CRITICAL: Preserve assistant messages with tool_calls that are
-    // referenced by preserved tool result messages. Without this, the API
-    // returns 400 "tool_call_id not found" because tool results reference
-    // tool_calls that were summarized away.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (4) CRITICAL: Preserve assistant messages with tool_calls that are
+    //     referenced by preserved tool result messages. Handles:
+    //     - Parallel tool calls (multiple tool results from one assistant)
+    //     - Tool results preserved by round but assistant is older
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut preserved_tool_call_ids = std::collections::HashSet::new();
     for (i, msg) in messages.iter().enumerate() {
         if preserve_indices.contains(&i)
@@ -189,6 +202,16 @@ pub fn apply_sliding_window(
                         if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
                             if preserved_tool_call_ids.contains(id) {
                                 preserve_indices.insert(i);
+                                // Also keep any tool results that follow this assistant
+                                let mut j = i + 1;
+                                while let Some(next) = messages.get(j) {
+                                    if next.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                                        preserve_indices.insert(j);
+                                        j += 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -198,20 +221,22 @@ pub fn apply_sliding_window(
         }
     }
 
-    // (3) Collect messages to summarize (everything NOT in preserve_indices)
-    //     and build a summary message to insert before the preserved window.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (5) Collect messages to summarize, with importance weighting
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut summarized_tokens: u64 = 0;
     let mut summarized_count = 0usize;
     let mut first_summarized_timestamp: Option<i64> = None;
     let mut last_summarized_timestamp: Option<i64> = None;
     let mut key_topics: Vec<String> = Vec::new();
+    let mut important_snippets: Vec<String> = Vec::new();
 
     for (i, msg) in messages.iter().enumerate() {
         if !preserve_indices.contains(&i) {
             summarized_tokens += token_counts.get(i).unwrap_or(&0);
             summarized_count += 1;
 
-            // Extract timestamps if available
+            // Extract timestamps
             if let Some(ts) = msg.get("created_at").and_then(|v| v.as_i64()) {
                 if first_summarized_timestamp.is_none() {
                     first_summarized_timestamp = Some(ts);
@@ -219,10 +244,26 @@ pub fn apply_sliding_window(
                 last_summarized_timestamp = Some(ts);
             }
 
-            // Extract key content snippets from user messages for context
+            // Extract key content snippets (first 10 + every 20th)
             if summarized_count <= 10 || summarized_count % 20 == 0 {
                 if let Some(content) = extract_message_content_snippet(msg, 100) {
                     key_topics.push(content);
+                }
+            }
+
+            // Collect important messages: errors, decisions, file ops
+            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                let lower = content.to_lowercase();
+                if lower.contains("error")
+                    || lower.contains("fix")
+                    || lower.contains("create")
+                    || lower.contains("delete")
+                    || lower.contains("important")
+                    || lower.contains("decision")
+                {
+                    if let Some(snippet) = extract_message_content_snippet(msg, 150) {
+                        important_snippets.push(snippet);
+                    }
                 }
             }
         }
@@ -236,15 +277,18 @@ pub fn apply_sliding_window(
             first_summarized_timestamp,
             last_summarized_timestamp,
             &key_topics,
+            &important_snippets,
         ))
     } else {
         None
     };
 
-    // Build final message list: system (first) + summary + other preserved
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (6) Build final message list: system (first) + summary + preserved
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut final_messages: Vec<Value> = Vec::new();
 
-    // Add preserved messages in original order
+    // Sort preserved indices to maintain original order
     let mut preserved_indices_sorted: Vec<usize> = preserve_indices.into_iter().collect();
     preserved_indices_sorted.sort();
 
@@ -271,10 +315,14 @@ pub fn apply_sliding_window(
     }
 
     let final_count = final_messages.len();
+
+    // Use HashSet for O(1) token sum lookup
+    let preserved_indices_set: std::collections::HashSet<usize> =
+        preserved_indices_sorted.iter().copied().collect();
     let preserved_tokens: u64 = token_counts
         .iter()
         .enumerate()
-        .filter(|(i, _)| preserved_indices_sorted.contains(i))
+        .filter(|(i, _)| preserved_indices_set.contains(i))
         .map(|(_, &t)| t)
         .sum();
 
@@ -284,9 +332,12 @@ pub fn apply_sliding_window(
         CompressionKind::None
     };
 
-    // Estimate summary message tokens (typically ~10% of original tokens)
+    // Estimate summary token count based on actual content length
     let summary_tokens_estimate = if summarized_count > 0 {
-        (summarized_tokens as f64 * 0.1) as u64
+        // More accurate: estimate based on typical summary ratio
+        // Summary is usually 5-15% of original, depending on content density
+        let ratio = if summarized_count > 50 { 0.08 } else { 0.12 };
+        (summarized_tokens as f64 * ratio) as u64
     } else {
         0
     };
@@ -362,12 +413,14 @@ fn extract_message_content_snippet(msg: &Value, max_len: usize) -> Option<String
 /// - Count of summarized messages and tokens
 /// - Time range covered
 /// - Key content snippets for context continuity
+/// - Important messages (errors, decisions, file ops)
 fn build_smart_summary(
     count: usize,
     tokens: u64,
     first_ts: Option<i64>,
     last_ts: Option<i64>,
     key_topics: &[String],
+    important_snippets: &[String],
 ) -> Value {
     let time_range = match (first_ts, last_ts) {
         (Some(s), Some(e)) => {
@@ -396,17 +449,33 @@ fn build_smart_summary(
         format!("\n\nKey earlier context:\n{}", topics_text)
     };
 
+    // Build important messages summary
+    let important_summary = if important_snippets.is_empty() {
+        String::new()
+    } else {
+        let snippets_text = important_snippets
+            .iter()
+            .take(5) // Limit to 5 important snippets
+            .enumerate()
+            .map(|(i, s)| format!("{}. {}", i + 1, s))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\nImportant earlier events:\n{}", snippets_text)
+    };
+
     let content = format!(
         "[Context Summary — {} messages, ~{} tokens compacted{}]\n\
          These earlier messages have been summarized to save context space. \
          The conversation history includes tool calls, code reviews, and file operations. \
          Refer to the most recent exchanges for current active context.\
-         {}",
-        count, tokens, time_range, topic_summary
+         {}{}",
+        count, tokens, time_range, topic_summary, important_summary
     );
 
+    // Use "system" role for summary — consistent with system prompt positioning,
+    // avoids confusing the model with a user message that isn't actually from the user
     serde_json::json!({
-        "role": "user",
+        "role": "system",
         "content": content
     })
 }
@@ -444,6 +513,7 @@ mod tests {
             context_window: 1000,
             threshold: 0.8,
             preserve_rounds: 2,
+            target_after: 0.6,
         }
     }
 
@@ -524,7 +594,7 @@ mod tests {
     fn trigger_and_target_limit() {
         let c = config();
         assert_eq!(c.trigger_limit(), 800);
-        assert_eq!(c.target_after(), 600);
+        assert_eq!(c.target_after_tokens(), 600);
     }
 
     #[test]
@@ -535,6 +605,7 @@ mod tests {
             Some(1000000),
             Some(1000200),
             &["Hello world".to_string(), "Fix bug in main.rs".to_string()],
+            &["Error in auth module".to_string()],
         );
         let content = placeholder["content"].as_str().unwrap();
         assert!(content.contains("50"));
@@ -542,6 +613,9 @@ mod tests {
         assert!(content.contains("Context Summary"));
         assert!(content.contains("Hello world"));
         assert!(content.contains("Fix bug"));
+        assert!(content.contains("Error in auth"));
+        // Summary should use system role
+        assert_eq!(placeholder["role"].as_str(), Some("system"));
     }
 
     #[test]

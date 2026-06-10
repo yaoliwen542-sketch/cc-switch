@@ -493,6 +493,10 @@ pub struct ProviderMeta {
     #[serde(rename = "rollingContextPreserveRounds", skip_serializing_if = "Option::is_none")]
     pub rolling_context_preserve_rounds: Option<u32>,
 
+    /// 压缩后目标比例（0.1-0.9，默认 0.6）。压缩后尽量让 token 降到这个比例
+    #[serde(rename = "rollingContextTarget", skip_serializing_if = "Option::is_none")]
+    pub rolling_context_target: Option<f64>,
+
     /// 是否启用 Claude Code 原生 auto-compact 作为 fallback
     /// （路由关闭时使用，写入 settings.json 的 env）
     #[serde(rename = "nativeAutoCompactEnabled", skip_serializing_if = "Option::is_none")]
@@ -546,6 +550,11 @@ impl ProviderMeta {
     /// Get number of rounds to preserve, with default 6
     pub fn preserve_rounds(&self) -> u32 {
         self.rolling_context_preserve_rounds.unwrap_or(6).max(1)
+    }
+
+    /// Get target ratio after compression (0.1-0.9), with default 0.6
+    pub fn rolling_target(&self) -> f64 {
+        self.rolling_context_target.unwrap_or(0.6).clamp(0.1, 0.95)
     }
 
     /// Check if rolling context is enabled

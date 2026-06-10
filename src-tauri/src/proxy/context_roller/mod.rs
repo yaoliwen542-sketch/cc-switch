@@ -124,6 +124,7 @@ pub async fn apply(
         context_window,
         threshold: meta.rolling_threshold(),
         preserve_rounds: meta.preserve_rounds(),
+        target_after: meta.rolling_target(),
     };
 
     // (5) Get or create session, read cumulative usage
@@ -137,11 +138,13 @@ pub async fn apply(
     let trigger_limit = (context_window as f64 * config.threshold) as u64;
 
     log::info!(
-        "[RollingContext] apply() session loaded: cumulative={} trigger={} (window={} threshold={}) session_id={} provider={}",
+        "[RollingContext] apply() session loaded: cumulative={} trigger={} target={} (window={} threshold={} target_ratio={}) session_id={} provider={}",
         cumulative_before,
         trigger_limit,
+        config.target_after_tokens(),
         context_window,
         config.threshold,
+        config.target_after,
         session_id,
         provider.id,
     );
@@ -199,7 +202,7 @@ pub async fn apply(
         stats.messages_after,
         stats.tokens_before,
         stats.tokens_after,
-        config.target_after(),
+        config.target_after_tokens(),
     );
 
     // (9) Apply compression if needed

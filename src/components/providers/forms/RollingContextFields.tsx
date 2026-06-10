@@ -156,6 +156,39 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                 </FormItem>
               )}
             />
+
+            <FormField
+              control={form.control}
+              name="rollingContextTarget"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t("provider.form.rollingContext.target")}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0.1"
+                      max="0.95"
+                      placeholder="0.6"
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(
+                          e.target.value === ""
+                            ? undefined
+                            : parseFloat(e.target.value)
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t("provider.form.rollingContext.targetHint")}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </>
         )}
       </div>
