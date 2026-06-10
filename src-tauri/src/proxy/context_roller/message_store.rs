@@ -254,7 +254,7 @@ impl MessageStore {
     ///
     /// Returns the number of session rows deleted.
     pub fn cleanup_stale_sessions(&self, stale_seconds: i64) -> Result<usize, String> {
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let cutoff = chrono::Utc::now().timestamp() - stale_seconds;
         // First delete messages belonging to stale sessions
         let msgs_deleted = conn
