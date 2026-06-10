@@ -80,7 +80,7 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                         field.onChange(
                           e.target.value === ""
                             ? undefined
-                            : parseInt(e.target.value, 10)
+                            : parseInt(e.target.value, 10),
                         )
                       }
                     />
@@ -113,7 +113,7 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                         field.onChange(
                           e.target.value === ""
                             ? undefined
-                            : parseFloat(e.target.value)
+                            : parseFloat(e.target.value),
                         )
                       }
                     />
@@ -144,7 +144,7 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                         field.onChange(
                           e.target.value === ""
                             ? undefined
-                            : parseInt(e.target.value, 10)
+                            : parseInt(e.target.value, 10),
                         )
                       }
                     />
@@ -217,7 +217,7 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                         field.onChange(
                           e.target.value === ""
                             ? undefined
-                            : parseInt(e.target.value, 10)
+                            : parseInt(e.target.value, 10),
                         )
                       }
                     />
@@ -242,15 +242,14 @@ export function RollingContextFields({ form }: RollingContextFieldsProps) {
                     <Input
                       type="number"
                       placeholder={
-                        form.getValues("contextWindow")?.toString() ??
-                        "1000000"
+                        form.getValues("contextWindow")?.toString() ?? "1000000"
                       }
                       value={field.value ?? ""}
                       onChange={(e) =>
                         field.onChange(
                           e.target.value === ""
                             ? undefined
-                            : parseInt(e.target.value, 10)
+                            : parseInt(e.target.value, 10),
                         )
                       }
                     />

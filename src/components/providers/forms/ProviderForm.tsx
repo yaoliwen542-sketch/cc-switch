@@ -381,8 +381,10 @@ function ProviderFormFull({
       contextWindow: initialData?.meta?.contextWindow,
       rollingContextEnabled: initialData?.meta?.rollingContextEnabled ?? false,
       rollingContextThreshold: initialData?.meta?.rollingContextThreshold,
-      rollingContextPreserveRounds: initialData?.meta?.rollingContextPreserveRounds,
-      nativeAutoCompactEnabled: initialData?.meta?.nativeAutoCompactEnabled ?? false,
+      rollingContextPreserveRounds:
+        initialData?.meta?.rollingContextPreserveRounds,
+      nativeAutoCompactEnabled:
+        initialData?.meta?.nativeAutoCompactEnabled ?? false,
       nativeAutoCompactPct: initialData?.meta?.nativeAutoCompactPct,
       nativeAutoCompactWindow: initialData?.meta?.nativeAutoCompactWindow,
     }),
