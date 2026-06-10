@@ -1,4 +1,5 @@
 //! Rolling Context module for cc-switch proxy.
+#![allow(dead_code, unused_imports)]
 //!
 //! ## Lifecycle
 //!

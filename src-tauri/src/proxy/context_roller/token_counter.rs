@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Token counting strategies for rolling context.
 //!
 //! Three strategies, in increasing order of accuracy:

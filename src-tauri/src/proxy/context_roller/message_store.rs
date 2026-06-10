@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! SQLite-backed session/message store for rolling context.
 //!
 //! ## Schema
@@ -111,7 +112,7 @@ impl MessageStore {
         model: Option<&str>,
         context_window: Option<u64>,
     ) -> Result<SessionRecord, String> {
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         // Try to find existing
         let mut stmt = conn
@@ -408,8 +409,7 @@ impl MessageStore {
         }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         // Build IN clause
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(

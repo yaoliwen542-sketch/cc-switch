@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! LLM-based summarization for rolling context.
 //!
 //! When cumulative tokens exceed the threshold, instead of simple truncation,

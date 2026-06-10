@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Sliding window logic for rolling context.
 //!
 //! ## Algorithm (v2 — usage-driven)
