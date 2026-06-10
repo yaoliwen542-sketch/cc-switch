@@ -1372,7 +1372,7 @@ impl RequestForwarder {
                     &self.session_id,
                     provider,
                     &self.message_store,
-                ) {
+                ).await {
                     Ok(Some(stats)) if stats.was_truncated => {
                         log::info!(
                             "[RollingContext] Rolling context applied for session {} ({} -> {} msgs, cumulative {} tokens, {}% of window)",

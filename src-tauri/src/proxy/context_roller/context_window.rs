@@ -207,18 +207,32 @@ pub fn apply_sliding_window(
         None
     };
 
-    // Build final message list: summary (if any) + preserved messages
+    // Build final message list: system (first) + summary + other preserved
     let mut final_messages: Vec<Value> = Vec::new();
-    if let Some(summary_msg) = summary {
-        final_messages.push(summary_msg);
-    }
 
     // Add preserved messages in original order
     let mut preserved_indices_sorted: Vec<usize> = preserve_indices.into_iter().collect();
     preserved_indices_sorted.sort();
+
+    let mut summary_inserted = false;
+    let mut summary = summary;
     for i in &preserved_indices_sorted {
         if let Some(msg) = messages.get(*i) {
+            // Insert summary after system message (first message)
+            if !summary_inserted && *i > 0 {
+                if let Some(summary_msg) = summary.take() {
+                    final_messages.push(summary_msg);
+                    summary_inserted = true;
+                }
+            }
             final_messages.push(msg.clone());
+        }
+    }
+
+    // If summary not yet inserted (e.g., no non-system preserved messages)
+    if !summary_inserted {
+        if let Some(summary_msg) = summary {
+            final_messages.push(summary_msg);
         }
     }
 
@@ -236,12 +250,19 @@ pub fn apply_sliding_window(
         CompressionKind::None
     };
 
+    // Estimate summary message tokens (typically ~10% of original tokens)
+    let summary_tokens_estimate = if summarized_count > 0 {
+        (summarized_tokens as f64 * 0.1) as u64
+    } else {
+        0
+    };
+
     RollingResult {
         messages: final_messages,
         kind,
         removed_count: summarized_count,
         cumulative_before: cumulative_usage,
-        cumulative_after: summarized_tokens + preserved_tokens,
+        cumulative_after: summary_tokens_estimate + preserved_tokens,
         final_message_count: final_count,
         summary_message_id: None,
     }
@@ -407,15 +428,15 @@ mod tests {
         // cumulative = 900 (> 800 trigger)
         let result = apply_sliding_window(&msgs, &tokens, 900, &config());
         assert_eq!(result.kind, CompressionKind::Summary);
-        // Should have summary (1) + system (1) + last 4 rounds (4) = 6 messages
+        // Should have system (1) + summary (1) + last 4 rounds (4) = 6 messages
         assert_eq!(result.final_message_count, 6);
-        // First message should be the summary
-        assert!(result.messages[0]["content"]
+        // First message should be system
+        assert_eq!(result.messages[0]["role"].as_str(), Some("system"));
+        // Second message should be the summary
+        assert!(result.messages[1]["content"]
             .as_str()
             .unwrap()
             .contains("Context Summary"));
-        // System message should be preserved (now at index 1)
-        assert_eq!(result.messages[1]["role"].as_str(), Some("system"));
     }
 
     #[test]
@@ -495,11 +516,13 @@ mod tests {
         let (msgs, tokens) = make_msgs(200, 100);
         // Cumulative = 25K (way over 1K window)
         let result = apply_sliding_window(&msgs, &tokens, 25_000, &config());
-        // Should have summary (1) + system (1) + last 4 = 6 messages
+        // Should have system (1) + summary (1) + last 4 = 6 messages
         assert_eq!(result.final_message_count, 6);
         assert_eq!(result.kind, CompressionKind::Summary);
-        // First message is summary
-        assert!(result.messages[0]["content"]
+        // First message is system
+        assert_eq!(result.messages[0]["role"].as_str(), Some("system"));
+        // Second message is summary
+        assert!(result.messages[1]["content"]
             .as_str()
             .unwrap()
             .contains("195 messages")); // 200 - 5 = 195 summarized
