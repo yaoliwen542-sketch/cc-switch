@@ -60,7 +60,10 @@ pub struct SummaryCompressor;
 impl CompressionStrategy for SummaryCompressor {
     fn compress(&self, messages_to_compress: &[MessageRecord]) -> Option<Value> {
         let evicted_count = messages_to_compress.len();
-        let evicted_tokens: u64 = messages_to_compress.iter().filter_map(|m| m.token_count).sum();
+        let evicted_tokens: u64 = messages_to_compress
+            .iter()
+            .filter_map(|m| m.token_count)
+            .sum();
         let time_range: Option<(i64, i64)> = messages_to_compress
             .iter()
             .filter_map(|m| m.created_at)
@@ -70,7 +73,11 @@ impl CompressionStrategy for SummaryCompressor {
                     Some((s, e)) => (s.min(t), e.max(t)),
                 })
             });
-        Some(build_summary_placeholder(evicted_count, evicted_tokens, time_range))
+        Some(build_summary_placeholder(
+            evicted_count,
+            evicted_tokens,
+            time_range,
+        ))
     }
     fn name(&self) -> &'static str {
         "summary-placeholder"
@@ -84,7 +91,10 @@ pub struct HybridCompressor {
 }
 
 impl HybridCompressor {
-    pub fn new(primary: Box<dyn CompressionStrategy>, fallback: Box<dyn CompressionStrategy>) -> Self {
+    pub fn new(
+        primary: Box<dyn CompressionStrategy>,
+        fallback: Box<dyn CompressionStrategy>,
+    ) -> Self {
         Self { primary, fallback }
     }
 }

@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn compression_at_or_above_threshold() {
         let (msgs, tokens) = make_msgs(10, 100); // body tokens = 1000
-        // cumulative = 900 (> 800 trigger)
+                                                 // cumulative = 900 (> 800 trigger)
         let result = apply_sliding_window(&msgs, &tokens, 900, &config());
         assert_eq!(result.kind, CompressionKind::Truncation);
         // preserved: system (100) + last 4 rounds (400) = 500

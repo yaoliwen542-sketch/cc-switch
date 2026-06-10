@@ -224,11 +224,7 @@ mod tests {
         // 100 ASCII chars: 100 / 3.5 = 28.57 raw, * 1.25 = 35.71 → 36
         let text = "a".repeat(100);
         let tokens = estimate_tokens(&text);
-        assert!(
-            tokens >= 30 && tokens <= 45,
-            "Expected ~36, got {}",
-            tokens
-        );
+        assert!(tokens >= 30 && tokens <= 45, "Expected ~36, got {}", tokens);
     }
 
     #[test]

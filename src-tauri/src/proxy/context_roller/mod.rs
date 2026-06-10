@@ -146,7 +146,10 @@ pub fn apply(
     );
 
     // (6) Estimate per-message tokens (for the truncate decision)
-    let token_counts: Vec<u64> = messages.iter().map(|m| estimate_message_tokens(m).total()).collect();
+    let token_counts: Vec<u64> = messages
+        .iter()
+        .map(|m| estimate_message_tokens(m).total())
+        .collect();
     let body_tokens: u64 = token_counts.iter().sum();
 
     // (7) Persist the current request's messages to history (best-effort)
@@ -422,7 +425,7 @@ mod tests {
     fn enabled_over_cumulative_threshold_truncates() {
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
-        // Pre-populate: cumulative = 9000 (over 8000)
+                                                   // Pre-populate: cumulative = 9000 (over 8000)
         store
             .get_or_create_session("sess-2", "test-prov", None, Some(10000))
             .unwrap();
@@ -441,7 +444,9 @@ mod tests {
             "model": "gpt-4",
             "messages": msgs
         });
-        let stats = apply(&mut body, "sess-2", &provider, &store).unwrap().unwrap();
+        let stats = apply(&mut body, "sess-2", &provider, &store)
+            .unwrap()
+            .unwrap();
         assert!(stats.was_truncated);
         // Body should be modified
         let final_msgs = body["messages"].as_array().unwrap();
@@ -488,7 +493,9 @@ mod tests {
             .get_or_create_session("sess-3", "test-prov", None, Some(10000))
             .unwrap();
         // Cumulative > trigger; need body large enough to actually have to drop
-        store.record_response_usage("sess-3", 9000, 0, 0, 0).unwrap();
+        store
+            .record_response_usage("sess-3", 9000, 0, 0, 0)
+            .unwrap();
         // Many rounds + large content so target (60% of 10K = 6K) is exceeded
         // by preserved alone, forcing non-preserved to be dropped.
         let mut msgs = vec![serde_json::json!({"role": "system", "content": "sys"})];
@@ -499,8 +506,13 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        let stats = apply(&mut body, "sess-3", &provider, &store).unwrap().unwrap();
-        assert!(stats.was_truncated, "Expected truncation, got stats: {stats:?}");
+        let stats = apply(&mut body, "sess-3", &provider, &store)
+            .unwrap()
+            .unwrap();
+        assert!(
+            stats.was_truncated,
+            "Expected truncation, got stats: {stats:?}"
+        );
         let history = store.get_compression_history("sess-3", 10).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].trigger, "threshold");
@@ -514,7 +526,9 @@ mod tests {
         store
             .get_or_create_session("sess-4", "test-prov", None, Some(10000))
             .unwrap();
-        store.record_response_usage("sess-4", 9000, 0, 0, 0).unwrap();
+        store
+            .record_response_usage("sess-4", 9000, 0, 0, 0)
+            .unwrap();
         let mut msgs = vec![serde_json::json!({"role": "system", "content": "sys"})];
         for i in 0..20 {
             msgs.push(serde_json::json!({

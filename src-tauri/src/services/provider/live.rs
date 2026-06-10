@@ -89,10 +89,7 @@ pub(crate) fn inject_native_auto_compact(
         //    in the JSON that native auto-compact is configured.
         obj.insert("autoCompactEnabled".to_string(), Value::Bool(true));
         if let Some(cw) = context_window {
-            obj.insert(
-                "autoCompactWindow".to_string(),
-                Value::Number(cw.into()),
-            );
+            obj.insert("autoCompactWindow".to_string(), Value::Number(cw.into()));
         }
     }
     v
@@ -108,7 +105,9 @@ pub(crate) fn inject_native_auto_compact(
 /// In that case we fall back to Claude Code's own auto-compact, which
 /// prevents deadlocks when users run claude-code directly against the
 /// upstream API (bypassing the proxy).
-pub(crate) fn should_inject_native_auto_compact(meta: Option<&crate::provider::ProviderMeta>) -> bool {
+pub(crate) fn should_inject_native_auto_compact(
+    meta: Option<&crate::provider::ProviderMeta>,
+) -> bool {
     match meta {
         // If rolling-context proxy is active, proxy handles compaction
         Some(m) if m.rolling_context_active() => false,
@@ -140,7 +139,10 @@ mod native_auto_compact_tests {
         assert_eq!(env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "60");
         assert_eq!(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "1000000");
         // Existing env keys preserved
-        assert_eq!(env["ANTHROPIC_BASE_URL"], "https://api.minimaxi.com/anthropic");
+        assert_eq!(
+            env["ANTHROPIC_BASE_URL"],
+            "https://api.minimaxi.com/anthropic"
+        );
         assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "sk-xxx");
         // Top-level flag set
         assert_eq!(out["autoCompactEnabled"], true);
@@ -902,9 +904,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
                 // Prefer the dedicated native_auto_compact_window, fall back
                 // to context_window. The dedicated field is what the user
                 // explicitly sets in the provider form.
-                let window = meta
-                    .native_auto_compact_window
-                    .or(meta.context_window);
+                let window = meta.native_auto_compact_window.or(meta.context_window);
                 // Default 60% if not specified (matches the original
                 // 81%-deadlock fix).
                 let pct = meta.native_auto_compact_pct.unwrap_or(60);

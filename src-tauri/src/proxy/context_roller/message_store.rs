@@ -225,10 +225,8 @@ impl MessageStore {
 
         // Re-read to return updated record
         self.get_or_create_session(
-            session_id,
-            "", // unused for re-read
-            None,
-            None,
+            session_id, "", // unused for re-read
+            None, None,
         )
     }
 
@@ -248,7 +246,8 @@ impl MessageStore {
                 msg.token_count.map(|v| v as i64),
                 msg.is_summary as i32,
                 serde_json::to_string(&msg.summary_source_ids).unwrap_or_else(|_| "[]".to_string()),
-                msg.created_at.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+                msg.created_at
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp()),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -345,24 +344,21 @@ impl MessageStore {
             .map_err(|e| e.to_string())?;
 
         let messages = stmt
-            .query_map(
-                rusqlite::params![session_id, start_id, end_id],
-                |row| {
-                    let source_ids_json: String = row.get(6)?;
-                    let summary_source_ids: Vec<i64> =
-                        serde_json::from_str(&source_ids_json).unwrap_or_default();
-                    Ok(MessageRecord {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        role: row.get(2)?,
-                        content: row.get(3)?,
-                        token_count: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                        is_summary: row.get::<_, i32>(5)? != 0,
-                        summary_source_ids,
-                        created_at: row.get(7)?,
-                    })
-                },
-            )
+            .query_map(rusqlite::params![session_id, start_id, end_id], |row| {
+                let source_ids_json: String = row.get(6)?;
+                let summary_source_ids: Vec<i64> =
+                    serde_json::from_str(&source_ids_json).unwrap_or_default();
+                Ok(MessageRecord {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    token_count: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                    is_summary: row.get::<_, i32>(5)? != 0,
+                    summary_source_ids,
+                    created_at: row.get(7)?,
+                })
+            })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -416,7 +412,10 @@ impl MessageStore {
             .take(ids.len())
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!("DELETE FROM rolling_context_messages WHERE id IN ({})", placeholders);
+        let sql = format!(
+            "DELETE FROM rolling_context_messages WHERE id IN ({})",
+            placeholders
+        );
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         for id in ids {
             params_vec.push(Box::new(*id));
@@ -603,11 +602,9 @@ impl MessageStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let count: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM rolling_context_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM rolling_context_sessions", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.to_string())?;
         let to_delete = count - max_sessions;
         if to_delete <= 0 {
@@ -780,7 +777,9 @@ mod tests {
             .get_or_create_session("sess-1", "prov-1", None, None)
             .unwrap();
         for i in 0..5 {
-            store.insert_message(&make_msg("sess-1", i, "user")).unwrap();
+            store
+                .insert_message(&make_msg("sess-1", i, "user"))
+                .unwrap();
         }
         let deleted = store
             .evict_oldest_messages_for_session("sess-1", 2)
@@ -812,9 +811,15 @@ mod tests {
         store
             .get_or_create_session("sess-1", "prov-1", None, None)
             .unwrap();
-        let id1 = store.insert_message(&make_msg("sess-1", 1, "user")).unwrap();
-        let id2 = store.insert_message(&make_msg("sess-1", 2, "user")).unwrap();
-        let id3 = store.insert_message(&make_msg("sess-1", 3, "user")).unwrap();
+        let id1 = store
+            .insert_message(&make_msg("sess-1", 1, "user"))
+            .unwrap();
+        let id2 = store
+            .insert_message(&make_msg("sess-1", 2, "user"))
+            .unwrap();
+        let id3 = store
+            .insert_message(&make_msg("sess-1", 3, "user"))
+            .unwrap();
         let deleted = store.delete_messages_by_ids(&[id1, id3]).unwrap();
         assert_eq!(deleted, 2);
         let remaining = store.get_messages("sess-1").unwrap();
@@ -885,7 +890,9 @@ mod tests {
         store
             .get_or_create_session("sess-1", "prov-1", None, None)
             .unwrap();
-        store.record_response_usage("sess-1", 100, 50, 10, 5).unwrap();
+        store
+            .record_response_usage("sess-1", 100, 50, 10, 5)
+            .unwrap();
         store.reset_cumulative_tokens("sess-1").unwrap();
         let session = store
             .get_or_create_session("sess-1", "prov-1", None, None)
@@ -920,7 +927,9 @@ mod tests {
         store
             .get_or_create_session("sess-1", "prov-1", None, None)
             .unwrap();
-        store.insert_message(&make_msg("sess-1", 1, "user")).unwrap();
+        store
+            .insert_message(&make_msg("sess-1", 1, "user"))
+            .unwrap();
         store
             .record_compression(&CompressionEvent {
                 id: None,

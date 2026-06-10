@@ -482,28 +482,46 @@ pub struct ProviderMeta {
     pub context_window: Option<u64>,
 
     /// 是否启用滚动上下文
-    #[serde(rename = "rollingContextEnabled", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rollingContextEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub rolling_context_enabled: Option<bool>,
 
     /// 触发压缩的阈值比例（0.0-1.0，默认 0.8）
-    #[serde(rename = "rollingContextThreshold", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rollingContextThreshold",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub rolling_context_threshold: Option<f64>,
 
     /// 保留最近几轮完整对话（默认 6）
-    #[serde(rename = "rollingContextPreserveRounds", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rollingContextPreserveRounds",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub rolling_context_preserve_rounds: Option<u32>,
 
     /// 是否启用 Claude Code 原生 auto-compact 作为 fallback
     /// （路由关闭时使用，写入 settings.json 的 env）
-    #[serde(rename = "nativeAutoCompactEnabled", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "nativeAutoCompactEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub native_auto_compact_enabled: Option<bool>,
 
     /// 原生 auto-compact 触发百分比（10-99）
-    #[serde(rename = "nativeAutoCompactPct", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "nativeAutoCompactPct",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub native_auto_compact_pct: Option<u32>,
 
     /// 原生 auto-compact 使用的 context window 大小（token）
-    #[serde(rename = "nativeAutoCompactWindow", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "nativeAutoCompactWindow",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub native_auto_compact_window: Option<u64>,
 }
 
@@ -540,7 +558,9 @@ impl ProviderMeta {
 
     /// Get rolling context threshold (0.0-1.0), with default 0.8
     pub fn rolling_threshold(&self) -> f64 {
-        self.rolling_context_threshold.unwrap_or(0.8).clamp(0.1, 0.99)
+        self.rolling_context_threshold
+            .unwrap_or(0.8)
+            .clamp(0.1, 0.99)
     }
 
     /// Get number of rounds to preserve, with default 6
@@ -561,16 +581,13 @@ impl ProviderMeta {
 
     /// Get the native auto-compact threshold percentage (10-99, default 60).
     pub fn native_auto_compact_pct(&self) -> u32 {
-        self.native_auto_compact_pct
-            .unwrap_or(60)
-            .clamp(10, 99)
+        self.native_auto_compact_pct.unwrap_or(60).clamp(10, 99)
     }
 
     /// Get the effective context window for native auto-compact.
     /// Falls back to `context_window` if `native_auto_compact_window` is not set.
     pub fn native_auto_compact_window(&self) -> Option<u64> {
-        self.native_auto_compact_window
-            .or(self.context_window)
+        self.native_auto_compact_window.or(self.context_window)
     }
 }
 
