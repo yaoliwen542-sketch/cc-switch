@@ -571,20 +571,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Prepare GH
-        run: |
-          gh --version || (type -p curl >/dev/null && sudo apt-get update && sudo apt-get install -y gh || true)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Download all release assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
           TAG="${GITHUB_REF_NAME}"
           mkdir -p dl
-          gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY"
-          ls -la dl || true
+          # Use GitHub API directly instead of gh CLI (more reliable)
+          API_URL="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG"
+          curl -fsL -H "Authorization: token $GITHUB_TOKEN" "$API_URL" | \
+            python3 -c "
+import sys, json, os
+data = json.load(sys.stdin)
+for asset in data['assets']:
+    name = asset['name']
+    url = asset['browser_download_url']
+    out = os.path.join('dl', name)
+    print(f'Downloading {name} ...')
+    os.system(f'curl -fsL -H \"Authorization: token $GITHUB_TOKEN\" -o \"{out}\" \"{url}\"')
+print('Done.')
+"
+          ls -la dl
       - name: Generate latest.json
         env:
           REPO: ${{ github.repository }}
