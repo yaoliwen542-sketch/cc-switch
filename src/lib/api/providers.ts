@@ -205,6 +205,7 @@ export const providersApi = {
     rollingContextEnabled?: boolean;
     rollingContextThreshold?: number;
     rollingContextPreserveRounds?: number;
+    rollingContextTarget?: number;
   } | null> {
     return await invoke("get_provider_rolling_context", {
       app: appId,

@@ -60,6 +60,7 @@ export const providerSchema = z.object({
   rollingContextEnabled: z.boolean().optional(),
   rollingContextThreshold: z.number().min(0.1).max(0.99).optional(),
   rollingContextPreserveRounds: z.number().min(1).optional(),
+  rollingContextTarget: z.number().min(0.1).max(0.95).optional(),
   // 原生 auto-compact fallback 配置（路由关闭时用）
   // 写入 settingsConfig 的 env 中，写到 ~/.claude/settings.json
   nativeAutoCompactEnabled: z.boolean().optional(),

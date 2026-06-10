@@ -98,9 +98,21 @@ jobs:
         shell: bash
         run: |
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "❌ TAURI_SIGNING_PRIVATE_KEY Secret 为空或不存在" >&2
-            echo "请检查 GitHub 仓库 Settings > Secrets and variables > Actions" >&2
-            exit 1
+            echo "⚠️ TAURI_SIGNING_PRIVATE_KEY Secret 为空或不存在，禁用自动更新签名"
+            node -e "
+              const fs = require('fs');
+              const path = 'src-tauri/tauri.conf.json';
+              const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+              if (config.plugins && config.plugins.updater) {
+                delete config.plugins.updater.pubkey;
+              }
+              if (config.bundle) {
+                config.bundle.createUpdaterArtifacts = false;
+              }
+              fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+            "
+            echo "✅ 已禁用 updater 签名，将继续生成安装包"
+            exit 0
           fi
 
           RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
