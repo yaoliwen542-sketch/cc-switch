@@ -1288,7 +1288,9 @@ impl Database {
             );",
             [],
         )
-        .map_err(|e| AppError::Database(format!("创建 rolling_context_compressions 表失败: {e}")))?;
+        .map_err(|e| {
+            AppError::Database(format!("创建 rolling_context_compressions 表失败: {e}"))
+        })?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rcc_session ON rolling_context_compressions(session_id, created_at DESC);",

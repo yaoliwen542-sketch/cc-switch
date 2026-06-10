@@ -981,9 +981,9 @@ mod tests {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db.clone())),
-            message_store: Arc::new(crate::proxy::context_roller::message_store::MessageStore::new(
-                db.conn.clone(),
-            )),
+            message_store: Arc::new(
+                crate::proxy::context_roller::message_store::MessageStore::new(db.conn.clone()),
+            ),
         }
     }
 

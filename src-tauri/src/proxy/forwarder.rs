@@ -1372,7 +1372,9 @@ impl RequestForwarder {
                     &self.session_id,
                     provider,
                     &self.message_store,
-                ).await {
+                )
+                .await
+                {
                     Ok(Some(stats)) if stats.was_truncated => {
                         log::info!(
                             "[RollingContext] Rolling context applied for session {} ({} -> {} msgs, cumulative {} tokens, {}% of window)",
@@ -2636,11 +2638,13 @@ mod tests {
             rectifier_config: RectifierConfig::default(),
             optimizer_config: OptimizerConfig::default(),
             copilot_optimizer_config: CopilotOptimizerConfig::default(),
-            message_store: Arc::new(crate::proxy::context_roller::message_store::MessageStore::new(
-                Arc::new(std::sync::Mutex::new(
-                    rusqlite::Connection::open_in_memory().expect("memory db"),
+            message_store: Arc::new(
+                crate::proxy::context_roller::message_store::MessageStore::new(Arc::new(
+                    std::sync::Mutex::new(
+                        rusqlite::Connection::open_in_memory().expect("memory db"),
+                    ),
                 )),
-            )),
+            ),
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,

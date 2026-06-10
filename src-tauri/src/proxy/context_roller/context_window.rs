@@ -183,8 +183,7 @@ pub fn apply_sliding_window(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut preserved_tool_call_ids = std::collections::HashSet::new();
     for (i, msg) in messages.iter().enumerate() {
-        if preserve_indices.contains(&i)
-            && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
+        if preserve_indices.contains(&i) && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
         {
             if let Some(tool_call_id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
                 preserved_tool_call_ids.insert(tool_call_id.to_string());
@@ -529,7 +528,7 @@ mod tests {
     #[test]
     fn compression_at_or_above_threshold() {
         let (msgs, tokens) = make_msgs(10, 100); // body tokens = 1000
-        // cumulative = 900 (> 800 trigger)
+                                                 // cumulative = 900 (> 800 trigger)
         let result = apply_sliding_window(&msgs, &tokens, 900, &config());
         assert_eq!(result.kind, CompressionKind::Summary);
         // Should have system (1) + summary (1) + last 4 rounds (4) = 6 messages

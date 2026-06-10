@@ -853,7 +853,10 @@ pub fn get_provider_rolling_context(
     app: String,
     provider_id: String,
 ) -> Result<Option<serde_json::Value>, String> {
-    let providers = state.db.get_all_providers(&app).map_err(|e| e.to_string())?;
+    let providers = state
+        .db
+        .get_all_providers(&app)
+        .map_err(|e| e.to_string())?;
     let provider = providers.get(&provider_id).ok_or("Provider not found")?;
 
     let config = provider.meta.as_ref().map(|meta| {
@@ -871,9 +874,7 @@ pub fn get_provider_rolling_context(
 /// List all rolling-context sessions, ordered by last activity. Returns an
 /// array of `RollingSessionInfo` enriched with utilization ratios.
 #[tauri::command]
-pub fn list_rolling_sessions(
-    state: State<'_, AppState>,
-) -> Result<Vec<serde_json::Value>, String> {
+pub fn list_rolling_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     use crate::proxy::context_roller::message_store::MessageStore;
     let conn = state.db.conn.clone();
     let store = MessageStore::new(conn);
@@ -936,14 +937,13 @@ pub fn get_rolling_compression_history(
 /// Reset a single session's rolling context state. Useful when switching
 /// providers or when the user wants to "start fresh".
 #[tauri::command]
-pub fn reset_rolling_session(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<(), String> {
+pub fn reset_rolling_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     use crate::proxy::context_roller::message_store::MessageStore;
     let conn = state.db.conn.clone();
     let store = MessageStore::new(conn);
-    store.reset_cumulative_tokens(&session_id).map_err(|e| e.to_string())?;
+    store
+        .reset_cumulative_tokens(&session_id)
+        .map_err(|e| e.to_string())?;
     log::info!("[RollingContext] Reset session {session_id}");
     Ok(())
 }

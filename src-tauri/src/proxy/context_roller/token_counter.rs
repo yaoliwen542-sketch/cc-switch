@@ -129,10 +129,10 @@ impl MessageTokens {
 
 /// Estimate tokens for a single message object (from serde_json::Value).
 pub fn estimate_message_tokens(message: &serde_json::Value) -> MessageTokens {
-    let mut result = MessageTokens::default();
-
-    // Structural overhead — every message has role, formatting delimiters.
-    result.overhead = 4;
+    let mut result = MessageTokens {
+        overhead: 4,
+        ..Default::default()
+    };
 
     // Content (string or array of content blocks)
     if let Some(content) = message.get("content") {
@@ -224,11 +224,7 @@ mod tests {
         // 100 ASCII chars: 100 / 3.5 = 28.57 raw, * 1.25 = 35.71 → 36
         let text = "a".repeat(100);
         let tokens = estimate_tokens(&text);
-        assert!(
-            tokens >= 30 && tokens <= 45,
-            "Expected ~36, got {}",
-            tokens
-        );
+        assert!(tokens >= 30 && tokens <= 45, "Expected ~36, got {}", tokens);
     }
 
     #[test]
