@@ -405,19 +405,31 @@ fn get_preserved_indices(messages: &[Value], config: &RollingConfig) -> Vec<usiz
 
 /// Extract API endpoint and key from provider for LLM summarization.
 fn extract_provider_api_info(provider: &Provider) -> (Option<String>, Option<String>) {
-    // Try to get endpoint from provider's settings_config
     let settings = &provider.settings_config;
 
+    // Try to get endpoint from settings_config directly
     let endpoint = settings
         .get("api_endpoint")
         .and_then(|e| e.as_str())
         .map(|s| s.to_string())
         .or_else(|| {
-            // Try base_url + /chat/completions
             settings
                 .get("base_url")
                 .and_then(|b| b.as_str())
                 .map(|base| format!("{}/chat/completions", base.trim_end_matches('/')))
+        })
+        .or_else(|| {
+            // Try env sub-object (common in cc-switch providers)
+            settings
+                .get("env")
+                .and_then(|env| env.as_object())
+                .and_then(|env| {
+                    env.get("ANTHROPIC_BASE_URL")
+                        .or_else(|| env.get("OPENAI_BASE_URL"))
+                        .or_else(|| env.get("API_BASE_URL"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(|base| format!("{}/v1/chat/completions", base.trim_end_matches('/')))
         });
 
     let api_key = settings
@@ -428,6 +440,19 @@ fn extract_provider_api_info(provider: &Provider) -> (Option<String>, Option<Str
             settings
                 .get("key")
                 .and_then(|k| k.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Try env sub-object
+            settings
+                .get("env")
+                .and_then(|env| env.as_object())
+                .and_then(|env| {
+                    env.get("ANTHROPIC_AUTH_TOKEN")
+                        .or_else(|| env.get("OPENAI_API_KEY"))
+                        .or_else(|| env.get("API_KEY"))
+                        .and_then(|v| v.as_str())
+                })
                 .map(|s| s.to_string())
         });
 
