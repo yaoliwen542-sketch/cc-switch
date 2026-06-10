@@ -128,7 +128,16 @@ pub async fn apply(
         target_after: meta.rolling_target(),
     };
 
-    // (5) Get or create session, read cumulative usage
+    // (5a) Opportunistic cleanup of zombie sessions — best-effort, only runs
+    //     occasionally to avoid hot-path overhead. Hash the session_id and
+    //     sample 1/1000 to gate the sweep. Sessions with no recorded usage
+    //     are skipped (newly created, still building up to the threshold).
+    if should_run_periodic_cleanup(session_id) {
+        if let Err(e) = store.cleanup_stale_sessions(3600) {
+            log::debug!("[RollingContext] cleanup_stale_sessions failed: {e}");
+        }
+    }
+
     let session = store.get_or_create_session(
         session_id,
         &provider.id,
@@ -504,6 +513,16 @@ pub fn record_response_usage(
 }
 
 /// Extract text content from a message for storage.
+/// Cheap probabilistic gate: hash the session_id, fire cleanup on ~1/1000 calls.
+/// This is not cryptographic — `DefaultHasher` is fine for sampling.
+fn should_run_periodic_cleanup(session_id: &str) -> bool {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    session_id.hash(&mut h);
+    h.finish() % 1000 == 0
+}
+
 fn extract_content_text(msg: &Value) -> String {
     match msg.get("content") {
         Some(Value::String(text)) => text.clone(),
