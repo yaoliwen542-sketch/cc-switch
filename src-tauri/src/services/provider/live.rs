@@ -179,12 +179,19 @@ mod native_auto_compact_tests {
     fn should_inject_logic() {
         // No meta → don't inject
         assert!(!should_inject_native_auto_compact(None));
-        // Meta with no context_window → don't inject
+        // Meta with no flags → don't inject (must explicitly enable)
         let m = ProviderMeta::default();
         assert!(!should_inject_native_auto_compact(Some(&m)));
-        // Meta with context_window but rolling off → inject
+        // Meta with context_window but no native flag → don't inject
         let m = ProviderMeta {
             context_window: Some(100_000),
+            ..Default::default()
+        };
+        assert!(!should_inject_native_auto_compact(Some(&m)));
+        // Meta with native auto-compact ON → inject
+        let m = ProviderMeta {
+            context_window: Some(100_000),
+            native_auto_compact_enabled: Some(true),
             ..Default::default()
         };
         assert!(should_inject_native_auto_compact(Some(&m)));
@@ -192,6 +199,14 @@ mod native_auto_compact_tests {
         let m = ProviderMeta {
             context_window: Some(100_000),
             rolling_context_enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(!should_inject_native_auto_compact(Some(&m)));
+        // Meta with both ON → rolling wins, don't inject
+        let m = ProviderMeta {
+            context_window: Some(100_000),
+            rolling_context_enabled: Some(true),
+            native_auto_compact_enabled: Some(true),
             ..Default::default()
         };
         assert!(!should_inject_native_auto_compact(Some(&m)));
