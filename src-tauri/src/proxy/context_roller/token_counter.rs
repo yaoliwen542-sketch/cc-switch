@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Token counting strategies for rolling context.
 //!
 //! Three strategies, in increasing order of accuracy:
@@ -129,10 +130,10 @@ impl MessageTokens {
 
 /// Estimate tokens for a single message object (from serde_json::Value).
 pub fn estimate_message_tokens(message: &serde_json::Value) -> MessageTokens {
-    let mut result = MessageTokens::default();
-
-    // Structural overhead — every message has role, formatting delimiters.
-    result.overhead = 4;
+    let mut result = MessageTokens {
+        overhead: 4,
+        ..Default::default()
+    };
 
     // Content (string or array of content blocks)
     if let Some(content) = message.get("content") {

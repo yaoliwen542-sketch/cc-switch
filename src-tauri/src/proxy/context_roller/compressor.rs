@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Compression strategies for rolling context.
 //!
 //! ## Strategies

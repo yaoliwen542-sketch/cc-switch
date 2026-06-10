@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! SQLite-backed session/message store for rolling context.
 //!
 //! ## Schema
@@ -111,7 +112,7 @@ impl MessageStore {
         model: Option<&str>,
         context_window: Option<u64>,
     ) -> Result<SessionRecord, String> {
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         // Try to find existing
         let mut stmt = conn
@@ -148,6 +149,64 @@ impl MessageStore {
         let now = chrono::Utc::now().timestamp();
 
         if let Ok(Some(session)) = existing {
+            // CRITICAL: Sync model and context_window from the *current* provider
+            // configuration. Without this, a session created when context_window
+            // was 1M would never trigger compression even after the user switched
+            // the provider to a 230K model — leaving zombie sessions that
+            // accumulate millions of tokens and overflow the upstream API.
+            let mut updated = session.clone();
+            let mut needs_update = false;
+
+            if let Some(m) = model {
+                if updated.model.as_deref() != Some(m) {
+                    updated.model = Some(m.to_string());
+                    needs_update = true;
+                }
+            }
+            if let Some(cw) = context_window {
+                if updated.context_window != Some(cw) {
+                    log::info!(
+                        "[RollingContext] session={} context_window synced: {} -> {}",
+                        session_id,
+                        updated.context_window.unwrap_or(0),
+                        cw
+                    );
+                    updated.context_window = Some(cw);
+                    needs_update = true;
+                }
+            }
+            // Also re-bind to the current provider_id (handles provider rename/swap).
+            if updated.provider_id != provider_id {
+                log::info!(
+                    "[RollingContext] session={} provider_id rebind: {} -> {}",
+                    session_id,
+                    updated.provider_id,
+                    provider_id
+                );
+                updated.provider_id = provider_id.to_string();
+                needs_update = true;
+            }
+
+            if needs_update {
+                conn.execute(
+                    "UPDATE rolling_context_sessions
+                     SET last_active_at = ?1,
+                         model = ?2,
+                         context_window = ?3,
+                         provider_id = ?4
+                     WHERE session_id = ?5",
+                    rusqlite::params![
+                        now,
+                        updated.model.as_deref(),
+                        updated.context_window.map(|v| v as i64),
+                        updated.provider_id,
+                        session_id,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(updated);
+            }
+
             conn.execute(
                 "UPDATE rolling_context_sessions SET last_active_at = ?1 WHERE session_id = ?2",
                 rusqlite::params![now, session_id],
@@ -186,6 +245,61 @@ impl MessageStore {
             last_active_at: Some(now),
             created_at: Some(now),
         })
+    }
+
+    /// Delete zombie sessions: inactive for more than `stale_seconds` AND
+    /// never compressed. Such sessions are typically from old providers /
+    /// model configurations that the user no longer routes traffic through,
+    /// and they pollute the rolling-context UI without ever being acted on.
+    ///
+    /// Returns the number of session rows deleted.
+    pub fn cleanup_stale_sessions(&self, stale_seconds: i64) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let cutoff = chrono::Utc::now().timestamp() - stale_seconds;
+        // First delete messages belonging to stale sessions
+        let msgs_deleted = conn
+            .execute(
+                "DELETE FROM rolling_context_messages
+                 WHERE session_id IN (
+                     SELECT session_id FROM rolling_context_sessions
+                     WHERE last_active_at < ?1
+                       AND compression_count = 0
+                       AND total_input_tokens > 0
+                 )",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| e.to_string())?;
+        let comps_deleted = conn
+            .execute(
+                "DELETE FROM rolling_context_compressions
+                 WHERE session_id IN (
+                     SELECT session_id FROM rolling_context_sessions
+                     WHERE last_active_at < ?1
+                       AND compression_count = 0
+                       AND total_input_tokens > 0
+                 )",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| e.to_string())?;
+        let sess_deleted = conn
+            .execute(
+                "DELETE FROM rolling_context_sessions
+                 WHERE last_active_at < ?1
+                   AND compression_count = 0
+                   AND total_input_tokens > 0",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| e.to_string())?;
+        if sess_deleted > 0 {
+            log::info!(
+                "[RollingContext] cleanup_stale_sessions: removed {} sessions, {} messages, {} compression records (cutoff_ts={})",
+                sess_deleted,
+                msgs_deleted,
+                comps_deleted,
+                cutoff
+            );
+        }
+        Ok(sess_deleted)
     }
 
     /// Update session token counters from a response. This is the primary way
@@ -408,8 +522,7 @@ impl MessageStore {
         }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         // Build IN clause
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
@@ -882,6 +995,112 @@ mod tests {
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].trigger, "c");
         assert_eq!(history[2].trigger, "a");
+    }
+
+    #[test]
+    fn cleanup_removes_stale_uncompressed_sessions() {
+        let store = in_memory_store();
+
+        // Active session with usage → keep
+        store
+            .get_or_create_session("active", "prov-1", None, Some(1000))
+            .unwrap();
+        store.record_response_usage("active", 500, 0, 0, 0).unwrap();
+
+        // Stale session, never compressed, has usage → delete
+        store
+            .get_or_create_session("stale-1", "prov-1", None, Some(1000))
+            .unwrap();
+        store
+            .record_response_usage("stale-1", 500, 0, 0, 0)
+            .unwrap();
+        // Backdate last_active_at to 2 hours ago
+        let two_hours_ago = chrono::Utc::now().timestamp() - 7200;
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE rolling_context_sessions SET last_active_at = ?1 WHERE session_id = ?2",
+                rusqlite::params![two_hours_ago, "stale-1"],
+            )
+            .unwrap();
+
+        // Stale session, has compressions → keep (compressed sessions are evidence of activity)
+        store
+            .get_or_create_session("compressed", "prov-1", None, Some(1000))
+            .unwrap();
+        store
+            .record_response_usage("compressed", 500, 0, 0, 0)
+            .unwrap();
+        store
+            .record_compression(&CompressionEvent {
+                id: None,
+                session_id: "compressed".to_string(),
+                trigger: "threshold".to_string(),
+                tokens_before: 500,
+                tokens_after: 100,
+                messages_removed: 5,
+                messages_summarized: 0,
+                summary_text: None,
+                created_at: None,
+            })
+            .unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE rolling_context_sessions SET last_active_at = ?1 WHERE session_id = ?2",
+                rusqlite::params![two_hours_ago, "compressed"],
+            )
+            .unwrap();
+
+        // Cleanup: 1h threshold should remove only `stale-1`
+        let removed = store.cleanup_stale_sessions(3600).unwrap();
+        assert_eq!(removed, 1);
+
+        // Active + compressed remain
+        let remaining: Vec<String> = {
+            let conn = store.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT session_id FROM rolling_context_sessions ORDER BY session_id")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(
+            remaining,
+            vec!["active".to_string(), "compressed".to_string()]
+        );
+    }
+
+    #[test]
+    fn get_or_create_session_syncs_context_window() {
+        let store = in_memory_store();
+
+        // Create with old (large) context window
+        store
+            .get_or_create_session("sess-1", "prov-old", Some("mimo"), Some(1_000_000))
+            .unwrap();
+        store
+            .record_response_usage("sess-1", 900_000, 0, 0, 0)
+            .unwrap();
+
+        // Re-open with a different provider / smaller window — typical
+        // scenario when user switched providers.
+        let session = store
+            .get_or_create_session("sess-1", "prov-new", Some("minimax-m2"), Some(246_000))
+            .unwrap();
+
+        // All three should reflect the *current* config, not the stale one.
+        assert_eq!(session.provider_id, "prov-new");
+        assert_eq!(session.model.as_deref(), Some("minimax-m2"));
+        assert_eq!(session.context_window, Some(246_000));
+        // Cumulative tokens are NOT reset — those represent real usage.
+        assert_eq!(session.total_input_tokens, 900_000);
     }
 
     #[test]

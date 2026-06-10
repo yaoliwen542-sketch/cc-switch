@@ -1,4 +1,5 @@
 //! Rolling Context module for cc-switch proxy.
+#![allow(dead_code, unused_imports)]
 //!
 //! ## Lifecycle
 //!
@@ -44,6 +45,7 @@
 pub mod compressor;
 pub mod context_window;
 pub mod message_store;
+pub mod summarizer;
 pub mod token_counter;
 
 use crate::provider::{Provider, ProviderMeta};
@@ -70,12 +72,12 @@ pub struct RollingStats {
 /// This is the pre-send entry point. It:
 /// 1. Checks if rolling-context is enabled for this provider
 /// 2. Reads the session's cumulative input tokens from the DB
-/// 3. If cumulative > threshold, truncates the messages array
+/// 3. If cumulative > threshold, calls LLM to summarize old messages
 /// 4. Records the compression event
 /// 5. Returns the modified body and statistics
 ///
 /// Returns `Ok(None)` if rolling-context is disabled or no work was done.
-pub fn apply(
+pub async fn apply(
     body: &mut Value,
     session_id: &str,
     provider: &Provider,
@@ -123,9 +125,19 @@ pub fn apply(
         context_window,
         threshold: meta.rolling_threshold(),
         preserve_rounds: meta.preserve_rounds(),
+        target_after: meta.rolling_target(),
     };
 
-    // (5) Get or create session, read cumulative usage
+    // (5a) Opportunistic cleanup of zombie sessions — best-effort, only runs
+    //     occasionally to avoid hot-path overhead. Hash the session_id and
+    //     sample 1/1000 to gate the sweep. Sessions with no recorded usage
+    //     are skipped (newly created, still building up to the threshold).
+    if should_run_periodic_cleanup(session_id) {
+        if let Err(e) = store.cleanup_stale_sessions(3600) {
+            log::debug!("[RollingContext] cleanup_stale_sessions failed: {e}");
+        }
+    }
+
     let session = store.get_or_create_session(
         session_id,
         &provider.id,
@@ -136,11 +148,13 @@ pub fn apply(
     let trigger_limit = (context_window as f64 * config.threshold) as u64;
 
     log::info!(
-        "[RollingContext] apply() session loaded: cumulative={} trigger={} (window={} threshold={}) session_id={} provider={}",
+        "[RollingContext] apply() session loaded: cumulative={} trigger={} target={} (window={} threshold={} target_ratio={}) session_id={} provider={}",
         cumulative_before,
         trigger_limit,
+        config.target_after_tokens(),
         context_window,
         config.threshold,
+        config.target_after,
         session_id,
         provider.id,
     );
@@ -179,7 +193,7 @@ pub fn apply(
         log::debug!("[RollingContext] insert_messages best-effort failed: {e}");
     }
 
-    // (8) Decide whether to truncate
+    // (8) Decide whether to compress
     let current_messages: Vec<Value> = messages.clone();
     let result = apply_sliding_window(&current_messages, &token_counts, cumulative_before, &config);
 
@@ -201,27 +215,120 @@ pub fn apply(
         stats.messages_after,
         stats.tokens_before,
         stats.tokens_after,
-        config.target_after(),
+        config.target_after_tokens(),
     );
 
-    // (9) Apply truncation if any
+    // (9) Apply compression if needed
     if !stats.was_truncated {
         return Ok(Some(stats));
     }
 
+    // (10) Call LLM to summarize old messages
+    let final_messages = if result.kind == context_window::CompressionKind::Summary {
+        // We have a summary from the placeholder - now enhance it with LLM
+        let messages_to_summarize: Vec<Value> = current_messages
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !is_preserved_index(*i, &current_messages, &config))
+            .map(|(_, m)| m.clone())
+            .collect();
+
+        if !messages_to_summarize.is_empty() {
+            // Get provider's API endpoint and key for summarization
+            let (endpoint, api_key) = extract_provider_api_info(provider);
+
+            if let (Some(endpoint), Some(api_key)) = (endpoint, api_key) {
+                let model_name = model.as_deref().unwrap_or("gpt-4");
+
+                match summarizer::summarize_messages(
+                    &messages_to_summarize,
+                    &endpoint,
+                    &api_key,
+                    model_name,
+                )
+                .await
+                {
+                    Ok(summary_result) => {
+                        log::info!(
+                            "[RollingContext] LLM summary generated: {} messages → {} tokens (saved {}%)",
+                            summary_result.messages_summarized,
+                            summary_result.summary_tokens,
+                            100 - (summary_result.summary_tokens * 100 / stats.tokens_before as usize),
+                        );
+
+                        // Build result_messages: system (first) + summary + other preserved
+                        let mut result_messages = Vec::new();
+
+                        // Add preserved messages in order
+                        let preserved_indices = get_preserved_indices(&current_messages, &config);
+                        let mut summary_inserted = false;
+                        for i in preserved_indices {
+                            if let Some(msg) = current_messages.get(i) {
+                                // Insert summary after system message
+                                if !summary_inserted && i > 0 {
+                                    result_messages.push(serde_json::json!({
+                                        "role": "user",
+                                        "content": format!(
+                                            "[Context Summary — {} messages, ~{} tokens compacted]\n{}",
+                                            summary_result.messages_summarized,
+                                            stats.tokens_before - result.cumulative_after,
+                                            summary_result.summary
+                                        )
+                                    }));
+                                    summary_inserted = true;
+                                }
+                                result_messages.push(msg.clone());
+                            }
+                        }
+
+                        // If no non-system preserved messages, add summary at end
+                        if !summary_inserted {
+                            result_messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": format!(
+                                    "[Context Summary — {} messages, ~{} tokens compacted]\n{}",
+                                    summary_result.messages_summarized,
+                                    stats.tokens_before - result.cumulative_after,
+                                    summary_result.summary
+                                )
+                            }));
+                        }
+
+                        result_messages
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[RollingContext] LLM summarization failed, falling back to template: {}",
+                            e
+                        );
+                        // Fall back to template-based summary
+                        result.messages
+                    }
+                }
+            } else {
+                log::debug!("[RollingContext] No API info available, using template summary");
+                result.messages
+            }
+        } else {
+            result.messages
+        }
+    } else {
+        result.messages
+    };
+
     log::info!(
-        "[RollingContext] session={} provider={} truncated {} → {} messages (cumulative {} → {} tokens, ratio {:.1}%)",
+        "[RollingContext] session={} provider={} compressed {} → {} messages (cumulative {} → {} tokens, ratio {:.1}%)",
         session_id,
         provider.id,
         stats.messages_before,
-        stats.messages_after,
+        final_messages.len(),
         cumulative_before,
         result.cumulative_after,
         100.0 * cumulative_before as f64 / context_window as f64,
     );
 
     // Replace messages in body
-    *body.get_mut("messages").unwrap() = Value::Array(result.messages);
+    *body.get_mut("messages").unwrap() = Value::Array(final_messages);
 
     // Record compression event
     let event = CompressionEvent {
@@ -231,7 +338,7 @@ pub fn apply(
         tokens_before: cumulative_before,
         tokens_after: result.cumulative_after,
         messages_removed: result.removed_count as i64,
-        messages_summarized: 0,
+        messages_summarized: result.removed_count as i64,
         summary_text: None,
         created_at: None,
     };
@@ -245,6 +352,127 @@ pub fn apply(
     }
 
     Ok(Some(stats))
+}
+
+/// Check if a message index is preserved (kept verbatim) after compression.
+fn is_preserved_index(index: usize, messages: &[Value], config: &RollingConfig) -> bool {
+    if index == 0 {
+        // System message is always preserved
+        return messages
+            .first()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .map(|r| r == "system" || r == "developer")
+            .unwrap_or(false);
+    }
+
+    // Check if it's in the last N rounds
+    let rounds_to_preserve = config.preserve_rounds as usize;
+    let mut kept_rounds = 0usize;
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if kept_rounds >= rounds_to_preserve * 2 {
+            break;
+        }
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role == "user" || role == "assistant" {
+            if i == index {
+                return true;
+            }
+            kept_rounds += 1;
+        }
+    }
+
+    false
+}
+
+/// Get indices of preserved messages (system + last N rounds).
+fn get_preserved_indices(messages: &[Value], config: &RollingConfig) -> Vec<usize> {
+    let mut indices = Vec::new();
+
+    // System message
+    if let Some(first) = messages.first() {
+        if first
+            .get("role")
+            .and_then(|r| r.as_str())
+            .map(|r| r == "system" || r == "developer")
+            .unwrap_or(false)
+        {
+            indices.push(0);
+        }
+    }
+
+    // Last N rounds
+    let rounds_to_preserve = config.preserve_rounds as usize;
+    let mut kept_rounds = 0usize;
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if kept_rounds >= rounds_to_preserve * 2 {
+            break;
+        }
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role == "user" || role == "assistant" {
+            indices.push(i);
+            kept_rounds += 1;
+        }
+    }
+
+    indices.sort();
+    indices
+}
+
+/// Extract API endpoint and key from provider for LLM summarization.
+fn extract_provider_api_info(provider: &Provider) -> (Option<String>, Option<String>) {
+    let settings = &provider.settings_config;
+
+    // Try to get endpoint from settings_config directly
+    let endpoint = settings
+        .get("api_endpoint")
+        .and_then(|e| e.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            settings
+                .get("base_url")
+                .and_then(|b| b.as_str())
+                .map(|base| format!("{}/chat/completions", base.trim_end_matches('/')))
+        })
+        .or_else(|| {
+            // Try env sub-object (common in cc-switch providers)
+            settings
+                .get("env")
+                .and_then(|env| env.as_object())
+                .and_then(|env| {
+                    env.get("ANTHROPIC_BASE_URL")
+                        .or_else(|| env.get("OPENAI_BASE_URL"))
+                        .or_else(|| env.get("API_BASE_URL"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(|base| format!("{}/v1/chat/completions", base.trim_end_matches('/')))
+        });
+
+    let api_key = settings
+        .get("api_key")
+        .and_then(|k| k.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            settings
+                .get("key")
+                .and_then(|k| k.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Try env sub-object
+            settings
+                .get("env")
+                .and_then(|env| env.as_object())
+                .and_then(|env| {
+                    env.get("ANTHROPIC_AUTH_TOKEN")
+                        .or_else(|| env.get("OPENAI_API_KEY"))
+                        .or_else(|| env.get("API_KEY"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(|s| s.to_string())
+        });
+
+    (endpoint, api_key)
 }
 
 /// Record token usage from an upstream response.
@@ -285,6 +513,16 @@ pub fn record_response_usage(
 }
 
 /// Extract text content from a message for storage.
+/// Cheap probabilistic gate: hash the session_id, fire cleanup on ~1/1000 calls.
+/// This is not cryptographic — `DefaultHasher` is fine for sampling.
+fn should_run_periodic_cleanup(session_id: &str) -> bool {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    session_id.hash(&mut h);
+    h.finish() % 1000 == 0
+}
+
 fn extract_content_text(msg: &Value) -> String {
     match msg.get("content") {
         Some(Value::String(text)) => text.clone(),
@@ -381,8 +619,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn disabled_returns_none() {
+    #[tokio::test]
+    async fn disabled_returns_none() {
         let store = in_memory_store();
         let provider = make_provider(1000, false);
         let mut body = serde_json::json!({
@@ -391,12 +629,12 @@ mod tests {
                 {"role": "user", "content": "hello"},
             ]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
         assert!(stats.is_none());
     }
 
-    #[test]
-    fn enabled_under_threshold_passes_through() {
+    #[tokio::test]
+    async fn enabled_under_threshold_passes_through() {
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         // Pre-populate session with low cumulative usage
@@ -414,15 +652,15 @@ mod tests {
                 {"role": "assistant", "content": "Hi there!"},
             ]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
         assert!(stats.is_some());
         let s = stats.unwrap();
         assert!(!s.was_truncated);
         assert_eq!(s.messages_before, 3);
     }
 
-    #[test]
-    fn enabled_over_cumulative_threshold_truncates() {
+    #[tokio::test]
+    async fn enabled_over_cumulative_threshold_truncates() {
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
                                                    // Pre-populate: cumulative = 9000 (over 8000)
@@ -445,6 +683,7 @@ mod tests {
             "messages": msgs
         });
         let stats = apply(&mut body, "sess-2", &provider, &store)
+            .await
             .unwrap()
             .unwrap();
         assert!(stats.was_truncated);
@@ -485,8 +724,8 @@ mod tests {
         assert_eq!(session.total_input_tokens, 0);
     }
 
-    #[test]
-    fn compression_event_recorded() {
+    #[tokio::test]
+    async fn compression_event_recorded() {
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
         store
@@ -507,6 +746,7 @@ mod tests {
         }
         let mut body = serde_json::json!({"messages": msgs});
         let stats = apply(&mut body, "sess-3", &provider, &store)
+            .await
             .unwrap()
             .unwrap();
         assert!(
@@ -519,8 +759,8 @@ mod tests {
         assert!(history[0].tokens_before > history[0].tokens_after);
     }
 
-    #[test]
-    fn cumulative_resets_after_compression() {
+    #[tokio::test]
+    async fn cumulative_resets_after_compression() {
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         store
@@ -537,7 +777,7 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        apply(&mut body, "sess-4", &provider, &store).unwrap();
+        apply(&mut body, "sess-4", &provider, &store).await.unwrap();
         // After compression, cumulative should be reset
         let session = store
             .get_or_create_session("sess-4", "test-prov", None, Some(10000))
@@ -547,24 +787,26 @@ mod tests {
         assert!(session.tokens_saved > 0);
     }
 
-    #[test]
-    fn no_meta_returns_none() {
+    #[tokio::test]
+    async fn no_meta_returns_none() {
         let store = in_memory_store();
         let mut provider = make_provider(1000, false);
         provider.meta = None;
         let mut body = serde_json::json!({
             "messages": [{"role": "user", "content": "hello"}]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
         assert!(stats.is_none());
     }
 
-    #[test]
-    fn empty_messages_array_returns_none() {
+    #[tokio::test]
+    async fn empty_messages_array_returns_none() {
         let store = in_memory_store();
         let provider = make_provider(1000, true);
         let mut body = serde_json::json!({"messages": []});
-        let stats = apply(&mut body, "sess-empty", &provider, &store).unwrap();
+        let stats = apply(&mut body, "sess-empty", &provider, &store)
+            .await
+            .unwrap();
         assert!(stats.is_none());
     }
 }
