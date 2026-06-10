@@ -164,6 +164,40 @@ pub fn apply_sliding_window(
         }
     }
 
+    // (2.5) CRITICAL: Preserve assistant messages with tool_calls that are
+    // referenced by preserved tool result messages. Without this, the API
+    // returns 400 "tool_call_id not found" because tool results reference
+    // tool_calls that were summarized away.
+    let mut preserved_tool_call_ids = std::collections::HashSet::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if preserve_indices.contains(&i)
+            && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
+        {
+            if let Some(tool_call_id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
+                preserved_tool_call_ids.insert(tool_call_id.to_string());
+            }
+        }
+    }
+
+    if !preserved_tool_call_ids.is_empty() {
+        for (i, msg) in messages.iter().enumerate() {
+            if !preserve_indices.contains(&i)
+                && msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            {
+                if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                    for tc in tool_calls {
+                        if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
+                            if preserved_tool_call_ids.contains(id) {
+                                preserve_indices.insert(i);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // (3) Collect messages to summarize (everything NOT in preserve_indices)
     //     and build a summary message to insert before the preserved window.
     let mut summarized_tokens: u64 = 0;
