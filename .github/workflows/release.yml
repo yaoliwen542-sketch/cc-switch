@@ -578,20 +578,22 @@ jobs:
           set -euxo pipefail
           TAG="${GITHUB_REF_NAME}"
           mkdir -p dl
-          # Use GitHub API directly instead of gh CLI (more reliable)
           API_URL="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG"
-          curl -fsL -H "Authorization: token $GITHUB_TOKEN" "$API_URL" | \
-            python3 -c "
-import sys, json, os
-data = json.load(sys.stdin)
-for asset in data['assets']:
-    name = asset['name']
-    url = asset['browser_download_url']
-    out = os.path.join('dl', name)
-    print(f'Downloading {name} ...')
-    os.system(f'curl -fsL -H \"Authorization: token $GITHUB_TOKEN\" -o \"{out}\" \"{url}\"')
-print('Done.')
-"
+          curl -fsL -H "Authorization: token $GITHUB_TOKEN" "$API_URL" > /tmp/release.json
+          cat > /tmp/dl_assets.py << 'EOF'
+          import sys, json, os
+          with open('/tmp/release.json') as f:
+              data = json.load(f)
+          for asset in data['assets']:
+              name = asset['name']
+              url = asset['browser_download_url']
+              out = os.path.join('dl', name)
+              print('Downloading', name, '...')
+              os.system('curl -fsL -H "Authorization: token ' + os.environ['GITHUB_TOKEN'] + '" -o "' + out + '" "' + url + '"')
+          print('Done.')
+          EOF
+          sed -i 's/^          //' /tmp/dl_assets.py
+          python3 /tmp/dl_assets.py
           ls -la dl
       - name: Generate latest.json
         env:
