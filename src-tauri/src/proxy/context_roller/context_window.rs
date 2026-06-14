@@ -112,8 +112,12 @@ pub fn apply_sliding_window(
 ) -> RollingResult {
     let trigger = config.trigger_limit();
 
-    // If cumulative is under the trigger, no compression.
-    if cumulative_usage <= trigger {
+    // If cumulative is under the trigger, no compression UNLESS message count exceeds
+    // the safety limit. This catches new sessions where cumulative hasn't accumulated
+    // enough yet (upstream usage reporting lags behind) but the message array is
+    // already large — a signal that the upstream context is filling up.
+    const MESSAGE_COUNT_TRIGGER: usize = 50;
+    if cumulative_usage <= trigger && messages.len() <= MESSAGE_COUNT_TRIGGER {
         return RollingResult {
             messages: messages.to_vec(),
             kind: CompressionKind::None,
