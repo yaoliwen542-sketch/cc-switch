@@ -4,12 +4,11 @@
 
 ### Claude Code、Claude Desktop、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes Agent のオールインワン管理ツール
 
-[![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Version](https://img.shields.io/github/v/release/yaoliwen542-sketch/cc-switch?color=blue&label=version)](https://github.com/yaoliwen542-sketch/cc-switch/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/yaoliwen542-sketch/cc-switch/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/yaoliwen542-sketch/cc-switch/total)](https://github.com/yaoliwen542-sketch/cc-switch/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 ### 🌐 唯一の公式サイト：**[ccswitch.io](https://ccswitch.io)**
 
@@ -19,7 +18,7 @@
 
 ## ❤️スポンサー
 
-> [ここに掲載しませんか？](mailto:farion1231@gmail.com)
+> [ここに掲載しませんか？](mailto:yaoliwen542@gmail.com)
 
 <details open>
 <summary>クリックで折りたたむ</summary>
@@ -531,7 +530,7 @@ PR を送る前に以下をご確認ください：
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=yaoliwen542-sketch/cc-switch&type=Date)](https://www.star-history.com/#yaoliwen542-sketch/cc-switch&Date)
 
 ## ライセンス
 
