@@ -18,15 +18,16 @@
 //!   ┌─────────────────┐                                            ┌──────────────────┐
 //!   │ pre_send:       │                                            │ post_response:   │
 //!   │ apply() checks  │                                            │ record_response_ │
-//!   │ session.cumul.  │                                            │ usage() updates  │
-//!   │ tokens > thresh?│                                            │ session.cumul.   │
+//!   │ cumulative OR   │                                            │ usage() updates  │
+//!   │ body > thresh?  │                                            │ session.cumul.   │
 //!   └────────┬────────┘                                            └────────┬─────────┘
 //!            │                                                              │
 //!            ▼ if yes                                                       ▼
 //!   ┌─────────────────┐                                            ┌──────────────────┐
-//!   │ truncate body,  │                                            │ store message in │
-//!   │ record event,   │                                            │ history (best-   │
-//!   │ reset cumul.    │                                            │ effort)          │
+//!   │ budget-driven   │                                            │ store message in │
+//!   │ retention,      │                                            │ history (best-   │
+//!   │ record event,   │                                            │ effort)          │
+//!   │ set cumul.      │                                            │                  │
 //!   └────────┬────────┘                                            └──────────────────┘
 //!            │
 //!            ▼
@@ -72,9 +73,10 @@ pub struct RollingStats {
 /// This is the pre-send entry point. It:
 /// 1. Checks if rolling-context is enabled for this provider
 /// 2. Reads the session's cumulative input tokens from the DB
-/// 3. If cumulative > threshold, calls LLM to summarize old messages
+/// 3. If cumulative OR current body exceeds the threshold, runs budget-driven
+///    retention and optionally enhances the summary with an LLM
 /// 4. Records the compression event
-/// 5. Returns the modified body and statistics
+/// 5. Sets cumulative tokens to the post-compression estimate
 ///
 /// Returns `Ok(None)` if rolling-context is disabled or no work was done.
 pub async fn apply(
@@ -194,6 +196,68 @@ pub async fn apply(
     }
 
     // (8) Decide whether to compress
+    let trigger_limit = config.trigger_limit();
+    let target_after = config.target_after_tokens();
+    let cumulative_trigger = cumulative_before >= trigger_limit;
+    let body_trigger = body_tokens >= trigger_limit;
+    let trigger_reason: Option<&'static str> = if body_trigger && cumulative_trigger {
+        Some("both")
+    } else if body_trigger {
+        Some("body_size")
+    } else if cumulative_trigger {
+        Some("cumulative")
+    } else {
+        None
+    };
+
+    // Sync-down stale cumulative when the current body already fits the target.
+    // This prevents a high historical cumulative from keeping the session in a
+    // permanent "about to compress" state when the active context is small.
+    if cumulative_before > trigger_limit && body_tokens <= target_after {
+        log::info!(
+            "[RollingContext] session={} sync-down cumulative {} -> {} (body {} <= target {})",
+            session_id,
+            cumulative_before,
+            body_tokens,
+            body_tokens,
+            target_after,
+        );
+        if let Err(e) = store.set_cumulative_tokens(session_id, body_tokens) {
+            log::warn!("[RollingContext] failed to sync-down cumulative tokens: {e}");
+        }
+        return Ok(Some(RollingStats {
+            was_truncated: false,
+            messages_before: messages.len(),
+            messages_after: messages.len(),
+            tokens_before: body_tokens,
+            tokens_after: body_tokens,
+            cumulative_before: body_tokens,
+            compression_index: session.compression_count,
+        }));
+    }
+
+    if trigger_reason.is_none() {
+        return Ok(Some(RollingStats {
+            was_truncated: false,
+            messages_before: messages.len(),
+            messages_after: messages.len(),
+            tokens_before: body_tokens,
+            tokens_after: body_tokens,
+            cumulative_before,
+            compression_index: session.compression_count,
+        }));
+    }
+
+    log::info!(
+        "[RollingContext] session={} compression triggered by {}: cumulative={} body={} trigger={} target={}",
+        session_id,
+        trigger_reason.unwrap_or("unknown"),
+        cumulative_before,
+        body_tokens,
+        trigger_limit,
+        target_after,
+    );
+
     let current_messages: Vec<Value> = messages.clone();
     let result = apply_sliding_window(&current_messages, &token_counts, cumulative_before, &config);
 
@@ -208,18 +272,25 @@ pub async fn apply(
     };
 
     log::info!(
-        "[RollingContext] apply() decision: was_truncated={} kind={:?} messages {}→{} tokens {}→{} target={}",
+        "[RollingContext] apply() decision: was_truncated={} kind={:?} messages {}→{} tokens {}→{} target={} trigger={}",
         stats.was_truncated,
         result.kind,
         stats.messages_before,
         stats.messages_after,
         stats.tokens_before,
         stats.tokens_after,
-        config.target_after_tokens(),
+        target_after,
+        trigger_limit,
     );
 
     // (9) Apply compression if needed
     if !stats.was_truncated {
+        // Compression was triggered but nothing could be evicted (e.g. mandatory
+        // layer already exceeds the target). Still set a baseline so we don't
+        // keep firing on stale cumulative usage.
+        if let Err(e) = store.set_cumulative_tokens(session_id, result.cumulative_after) {
+            log::warn!("[RollingContext] failed to set cumulative tokens: {e}");
+        }
         return Ok(Some(stats));
     }
 
@@ -334,7 +405,7 @@ pub async fn apply(
     let event = CompressionEvent {
         id: None,
         session_id: session_id.to_string(),
-        trigger: "threshold".to_string(),
+        trigger: trigger_reason.unwrap_or("threshold").to_string(),
         tokens_before: cumulative_before,
         tokens_after: result.cumulative_after,
         messages_removed: result.removed_count as i64,
@@ -346,9 +417,10 @@ pub async fn apply(
         log::warn!("[RollingContext] failed to record compression event: {e}");
     }
 
-    // Reset cumulative so the next response's usage becomes the new baseline
-    if let Err(e) = store.reset_cumulative_tokens(session_id) {
-        log::warn!("[RollingContext] failed to reset cumulative tokens: {e}");
+    // Set cumulative to the post-compression estimate so the next request only
+    // triggers again after new usage pushes the running total over the limit.
+    if let Err(e) = store.set_cumulative_tokens(session_id, result.cumulative_after) {
+        log::warn!("[RollingContext] failed to set cumulative tokens: {e}");
     }
 
     Ok(Some(stats))
@@ -755,7 +827,7 @@ mod tests {
         );
         let history = store.get_compression_history("sess-3", 10).unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].trigger, "threshold");
+        assert_eq!(history[0].trigger, "both");
         assert!(history[0].tokens_before > history[0].tokens_after);
     }
 
@@ -777,14 +849,109 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        apply(&mut body, "sess-4", &provider, &store).await.unwrap();
-        // After compression, cumulative should be reset
+        let stats = apply(&mut body, "sess-4", &provider, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        // After compression, cumulative should be set to the post-compression estimate.
         let session = store
             .get_or_create_session("sess-4", "test-prov", None, Some(10000))
             .unwrap();
-        assert_eq!(session.total_input_tokens, 0);
+        assert_eq!(session.total_input_tokens, stats.tokens_after);
+        assert!(session.total_input_tokens > 0);
         assert_eq!(session.compression_count, 1);
         assert!(session.tokens_saved > 0);
+    }
+
+    #[tokio::test]
+    async fn body_size_alone_triggers_compression() {
+        let store = in_memory_store();
+        let provider = make_provider(10000, true); // trigger at 8000, target at 6000
+        store
+            .get_or_create_session("sess-body", "test-prov", None, Some(10000))
+            .unwrap();
+        // Keep cumulative low, but send a huge body that exceeds the trigger.
+        store
+            .record_response_usage("sess-body", 100, 0, 0, 0)
+            .unwrap();
+        let mut msgs = vec![serde_json::json!({"role": "system", "content": "sys"})];
+        for i in 0..20 {
+            msgs.push(serde_json::json!({
+                "role": if i % 2 == 0 { "user" } else { "assistant" },
+                "content": format!("round {} {}", i, "x".repeat(2000)),
+            }));
+        }
+        let mut body = serde_json::json!({"messages": msgs});
+        let stats = apply(&mut body, "sess-body", &provider, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stats.was_truncated, "Expected body-size trigger to truncate");
+        let history = store.get_compression_history("sess-body", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].trigger, "body_size");
+    }
+
+    #[tokio::test]
+    async fn sync_down_when_cumulative_stale() {
+        let store = in_memory_store();
+        let provider = make_provider(10000, true); // trigger at 8000, target at 6000
+        store
+            .get_or_create_session("sess-sync", "test-prov", None, Some(10000))
+            .unwrap();
+        // Cumulative is high, but the active body is small enough to fit target.
+        store
+            .record_response_usage("sess-sync", 9000, 0, 0, 0)
+            .unwrap();
+        let mut body = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+            ]
+        });
+        let stats = apply(&mut body, "sess-sync", &provider, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stats.was_truncated);
+        let session = store
+            .get_or_create_session("sess-sync", "test-prov", None, Some(10000))
+            .unwrap();
+        // Cumulative should be synced down to the small body size.
+        assert_eq!(session.total_input_tokens, stats.tokens_after);
+        assert!(session.total_input_tokens < 8000);
+        // No compression event should be recorded.
+        let history = store.get_compression_history("sess-sync", 10).unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_trigger_with_low_cumulative_and_small_body() {
+        let store = in_memory_store();
+        let provider = make_provider(10000, true);
+        store
+            .get_or_create_session("sess-low", "test-prov", None, Some(10000))
+            .unwrap();
+        store
+            .record_response_usage("sess-low", 100, 0, 0, 0)
+            .unwrap();
+        let mut body = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+            ]
+        });
+        let stats = apply(&mut body, "sess-low", &provider, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stats.was_truncated);
+        assert_eq!(stats.messages_before, 3);
+        assert_eq!(stats.messages_after, 3);
     }
 
     #[tokio::test]

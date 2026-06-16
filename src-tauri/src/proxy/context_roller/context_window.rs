@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 //! Sliding window logic for rolling context.
 //!
-//! ## Algorithm (v2 — usage-driven)
+//! ## Algorithm (v3 — token-budget driven)
 //!
-//! The threshold check is no longer "does the *current request body* exceed the
-//! window?" — it is **"has the *cumulative session usage* (from upstream
+//! The threshold check is **"has the *cumulative session usage* (from upstream
 //! `usage.input_tokens`) exceeded the threshold?"**. This matches what the
 //! upstream provider actually sees: the provider counts ALL tokens ever sent in
 //! this session's history, not just the most recent request.
@@ -24,19 +23,23 @@
 //! - Cumulative input is now 80% of the window, but the next request only
 //!   adds 5% — looks fine in isolation, but combined it overflows.
 //!
-//! ## Truncation strategy
+//! ## Retention strategy
 //!
-//! When the session's cumulative usage exceeds the threshold:
+//! When compression fires, `target_after_tokens()` is treated as a real
+//! retention budget rather than a logging hint:
 //!
-//! 1. **Always keep**: the system message (idx 0) if present
-//! 2. **Always keep**: the last `preserve_rounds` user/assistant exchanges
-//!    (their tool_calls and tool_results are kept together to preserve pairing)
-//! 3. **Truncate the rest**: drop the oldest non-preserved messages first,
-//!    until the *projected* post-truncation usage (last response's input count
-//!    minus the dropped tokens) drops below the threshold.
-//! 4. **Reset cumulative counters**: after a successful truncation, we
-//!    record the compression event and reset `total_input_tokens` to 0 so the
-//!    next response's `usage.input_tokens` becomes the new baseline.
+//! 1. **Mandatory layer**: system message (idx 0) and the last
+//!    `preserve_rounds` user/assistant exchanges are always kept. Tool calls
+//!    and their corresponding tool results are preserved as atomic pairs.
+//! 2. **Budget backfill**: if the mandatory layer is under
+//!    `target_after_tokens()`, recent non-mandatory messages/groups are added
+//!    back (newest first) until the budget is exhausted.
+//! 3. **Summarize the remainder**: everything not preserved is compacted into
+//!    a single summary message.
+//!
+//! Post-compression, the session cumulative is baselined at the estimated
+//! post-compression token count instead of being reset to zero, which avoids
+//! compression thrashing.
 
 use serde_json::Value;
 
@@ -95,12 +98,18 @@ impl RollingConfig {
     }
 }
 
-/// Decide which messages to keep given cumulative session usage.
+/// Decide which messages to keep using the configured token budget.
 ///
-/// This is the core algorithm. It takes:
+/// This is the core retention algorithm. The caller decides *whether* compression
+/// is needed (e.g. cumulative usage or current body size exceeds the trigger);
+/// this function always runs the budget-driven retention pass and returns a
+/// `RollingResult` describing the new messages array and what was removed.
+///
+/// It takes:
 /// - the current request's `messages` array
 /// - per-message token estimates
 /// - the **cumulative** session usage reported by the upstream API so far
+///   (used only for logging / result metadata)
 /// - the rolling config
 ///
 /// Returns a `RollingResult` describing the new messages array and what was removed.
@@ -110,26 +119,13 @@ pub fn apply_sliding_window(
     cumulative_usage: u64,
     config: &RollingConfig,
 ) -> RollingResult {
-    let trigger = config.trigger_limit();
-
-    // If cumulative is under the trigger, no compression.
-    if cumulative_usage <= trigger {
-        return RollingResult {
-            messages: messages.to_vec(),
-            kind: CompressionKind::None,
-            removed_count: 0,
-            cumulative_before: cumulative_usage,
-            cumulative_after: cumulative_usage,
-            final_message_count: messages.len(),
-            summary_message_id: None,
-        };
-    }
+    let target = config.target_after_tokens();
 
     // Use HashSet for O(1) membership checks
     let mut preserve_indices = std::collections::HashSet::new();
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // (1) Always keep system/developer message at idx 0
+    // (1) Mandatory layer: system/developer message at idx 0
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if let Some(first) = messages.first() {
         if is_system_message(first) {
@@ -138,7 +134,7 @@ pub fn apply_sliding_window(
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // (2) Always keep last N rounds of user/assistant
+    // (2) Mandatory layer: last N rounds of user/assistant
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let rounds_to_preserve = config.preserve_rounds as usize;
     let mut kept_rounds: Vec<usize> = Vec::new();
@@ -222,7 +218,60 @@ pub fn apply_sliding_window(
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // (5) Collect messages to summarize, with importance weighting
+    // (5) Budget backfill: keep extra recent messages while under target
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let mandatory_indices = preserve_indices.clone();
+    let mandatory_tokens: u64 = token_counts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mandatory_indices.contains(i))
+        .map(|(_, &t)| t)
+        .sum();
+
+    let mut remaining_budget = target.saturating_sub(mandatory_tokens);
+    if remaining_budget > 0 {
+        // Build atomic groups: an assistant with tool_calls and all following
+        // consecutive tool results form one group.
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut i = 0;
+        while i < messages.len() {
+            let mut group = vec![i];
+            let msg = &messages[i];
+            if msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                && msg.get("tool_calls").is_some()
+            {
+                let mut j = i + 1;
+                while j < messages.len()
+                    && messages[j].get("role").and_then(|r| r.as_str()) == Some("tool")
+                {
+                    group.push(j);
+                    j += 1;
+                }
+            }
+            i = *group.last().unwrap() + 1;
+            groups.push(group);
+        }
+
+        // Add whole groups from newest to oldest while they fit in the budget.
+        for group in groups.iter().rev() {
+            if group.iter().any(|idx| preserve_indices.contains(idx)) {
+                continue;
+            }
+            let group_tokens: u64 = group
+                .iter()
+                .map(|&idx| *token_counts.get(idx).unwrap_or(&0))
+                .sum();
+            if group_tokens <= remaining_budget {
+                for &idx in group {
+                    preserve_indices.insert(idx);
+                }
+                remaining_budget -= group_tokens;
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (6) Collect messages to summarize, with importance weighting
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut summarized_tokens: u64 = 0;
     let mut summarized_count = 0usize;
@@ -284,7 +333,7 @@ pub fn apply_sliding_window(
     };
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // (6) Build final message list: system (first) + summary + preserved
+    // (7) Build final message list: system (first) + summary + preserved
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mut final_messages: Vec<Value> = Vec::new();
 
@@ -316,7 +365,6 @@ pub fn apply_sliding_window(
 
     let final_count = final_messages.len();
 
-    // Use HashSet for O(1) token sum lookup
     let preserved_indices_set: std::collections::HashSet<usize> =
         preserved_indices_sorted.iter().copied().collect();
     let preserved_tokens: u64 = token_counts
@@ -532,8 +580,8 @@ mod tests {
                                                  // cumulative = 900 (> 800 trigger)
         let result = apply_sliding_window(&msgs, &tokens, 900, &config());
         assert_eq!(result.kind, CompressionKind::Summary);
-        // Should have system (1) + summary (1) + last 4 rounds (4) = 6 messages
-        assert_eq!(result.final_message_count, 6);
+        // system (1) + mandatory last 4 rounds (4) + one budget backfill (1) + summary (1) = 7
+        assert_eq!(result.final_message_count, 7);
         // First message should be system
         assert_eq!(result.messages[0]["role"].as_str(), Some("system"));
         // Second message should be the summary
@@ -556,8 +604,7 @@ mod tests {
 
     #[test]
     fn preserves_last_n_rounds() {
-        let (mut msgs, mut tokens) = make_msgs(11, 100);
-        // Make last 4 explicitly identifiable
+        let (msgs, tokens) = make_msgs(11, 100);
         let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
         // Last preserved (the most recent) should be the last assistant in the array
         let last = result.messages.last().unwrap();
@@ -624,8 +671,8 @@ mod tests {
         let (msgs, tokens) = make_msgs(200, 100);
         // Cumulative = 25K (way over 1K window)
         let result = apply_sliding_window(&msgs, &tokens, 25_000, &config());
-        // Should have system (1) + summary (1) + last 4 = 6 messages
-        assert_eq!(result.final_message_count, 6);
+        // system (1) + mandatory last 4 rounds (4) + one budget backfill (1) + summary (1) = 7
+        assert_eq!(result.final_message_count, 7);
         assert_eq!(result.kind, CompressionKind::Summary);
         // First message is system
         assert_eq!(result.messages[0]["role"].as_str(), Some("system"));
@@ -633,6 +680,69 @@ mod tests {
         assert!(result.messages[1]["content"]
             .as_str()
             .unwrap()
-            .contains("195 messages")); // 200 - 5 = 195 summarized
+            .contains("194 messages")); // 200 - 6 = 194 summarized
+    }
+
+    #[test]
+    fn budget_backfill_uses_target_after() {
+        // 20 messages, each 100 tokens. Mandatory = system (100) + last 4 rounds (400) = 500.
+        // target_after = 600, so budget backfill can add one more 100-token message.
+        let (msgs, tokens) = make_msgs(20, 100);
+        let result = apply_sliding_window(&msgs, &tokens, 900, &config());
+        assert_eq!(result.kind, CompressionKind::Summary);
+        assert_eq!(result.final_message_count, 7); // 6 preserved + summary
+        assert!(result.cumulative_after <= config().target_after_tokens() + 200);
+    }
+
+    #[test]
+    fn larger_messages_reduce_backfill() {
+        // Same message count, but each message is 250 tokens.
+        // Mandatory = system (250) + last 4 rounds (1000) = 1250 > target (600).
+        // No budget backfill possible; only mandatory preserved.
+        let (msgs, tokens) = make_msgs(10, 250);
+        let result = apply_sliding_window(&msgs, &tokens, 900, &config());
+        assert_eq!(result.kind, CompressionKind::Summary);
+        // system (1) + last 4 rounds (4) + summary (1) = 6
+        assert_eq!(result.final_message_count, 6);
+    }
+
+    #[test]
+    fn backfill_keeps_tool_groups_atomic() {
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "f1", "arguments": "{}"}},
+                    {"id": "2", "function": {"name": "f2", "arguments": "{}"}}
+                ]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "1", "content": "r1"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "2", "content": "r2"}),
+        ];
+        // system=50, user=100, assistant=50, tools=50 each
+        let tokens = vec![50u64, 100, 50, 50, 50];
+        let mut cfg = config();
+        cfg.preserve_rounds = 0; // only system is mandatory
+        cfg.target_after = 0.25; // target = 250; budget after system = 200
+        // The tool group (assistant + 2 tools = 150) fits, the user message (100) does not.
+        let result = apply_sliding_window(&msgs, &tokens, 900, &cfg);
+        assert_eq!(result.kind, CompressionKind::Summary);
+        // Either all tools are preserved or none (atomic group)
+        let tool_count = result
+            .messages
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("tool"))
+            .count();
+        assert!(tool_count == 0 || tool_count == 2);
+        // If tools are preserved, the parent assistant must also be preserved
+        if tool_count == 2 {
+            assert!(result
+                .messages
+                .iter()
+                .any(|m| m["role"].as_str() == Some("assistant")));
+        }
     }
 }

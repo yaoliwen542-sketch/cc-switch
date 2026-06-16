@@ -569,6 +569,20 @@ impl MessageStore {
         Ok(())
     }
 
+    /// Set cumulative input tokens to a specific value (used after compression
+    /// to baseline the session at the estimated post-compression body size).
+    pub fn set_cumulative_tokens(&self, session_id: &str, tokens: u64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE rolling_context_sessions
+             SET total_input_tokens = ?1
+             WHERE session_id = ?2",
+            rusqlite::params![tokens as i64, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Atomically: record a compression event + update session counters.
     pub fn record_compression(&self, event: &CompressionEvent) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -1120,6 +1134,26 @@ mod tests {
         assert_eq!(session.total_output_tokens, 0);
         assert_eq!(session.total_cache_read_tokens, 0);
         assert_eq!(session.total_cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn set_cumulative_tokens_updates_total_input_only() {
+        let store = in_memory_store();
+        store
+            .get_or_create_session("sess-1", "prov-1", None, None)
+            .unwrap();
+        store
+            .record_response_usage("sess-1", 100, 50, 10, 5)
+            .unwrap();
+        store.set_cumulative_tokens("sess-1", 42).unwrap();
+        let session = store
+            .get_or_create_session("sess-1", "prov-1", None, None)
+            .unwrap();
+        assert_eq!(session.total_input_tokens, 42);
+        // Other counters must remain untouched.
+        assert_eq!(session.total_output_tokens, 50);
+        assert_eq!(session.total_cache_read_tokens, 10);
+        assert_eq!(session.total_cache_creation_tokens, 5);
     }
 
     #[test]
