@@ -893,7 +893,8 @@
       "defaultCostMultiplierRequired": "Default multiplier is required",
       "defaultCostMultiplierInvalid": "Invalid multiplier format"
     },
-    "saveFailedGeneric": "Save failed, please try again"
+    "saveFailedGeneric": "Save failed, please try again",
+    "openExternalFailed": "Failed to open external link. Please check your system browser."
   },
   "apps": {
     "claude": "Claude",

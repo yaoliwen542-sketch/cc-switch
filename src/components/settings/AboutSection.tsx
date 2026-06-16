@@ -867,7 +867,14 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => settingsApi.openExternal("https://ccswitch.io")}
+              onClick={() =>
+                settingsApi.openExternal("https://github.com/yaoliwen542-sketch/cc-switch/releases").catch(
+                  (err) => {
+                    console.error("[AboutSection] openExternal failed", err);
+                    toast.error(t("settings.openExternalFailed"));
+                  },
+                )
+              }
               className="h-8 gap-1.5 text-xs"
             >
               <Globe className="h-3.5 w-3.5" />
@@ -880,7 +887,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               onClick={() =>
                 settingsApi.openExternal(
                   "https://github.com/yaoliwen542-sketch/cc-switch",
-                )
+                ).catch((err) => {
+                  console.error("[AboutSection] openExternal failed", err);
+                  toast.error(t("settings.openExternalFailed"));
+                })
               }
               className="h-8 gap-1.5 text-xs"
             >
@@ -891,7 +901,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               type="button"
               variant="outline"
               size="sm"
-              onClick={handleOpenReleaseNotes}
+              onClick={() =>
+                handleOpenReleaseNotes().catch((err) => {
+                  console.error("[AboutSection] open release notes failed", err);
+                  toast.error(t("settings.openExternalFailed"));
+                })
+              }
               className="h-8 gap-1.5 text-xs"
             >
               <ExternalLink className="h-3.5 w-3.5" />

@@ -893,7 +893,8 @@
       "defaultCostMultiplierRequired": "默认倍率不能为空",
       "defaultCostMultiplierInvalid": "默认倍率格式不正确"
     },
-    "saveFailedGeneric": "保存失败，请重试"
+    "saveFailedGeneric": "保存失败，请重试",
+    "openExternalFailed": "打开外部链接失败，请检查系统浏览器"
   },
   "apps": {
     "claude": "Claude",
