@@ -541,11 +541,12 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: CC Switch ${{ github.ref_name }}
-          prerelease: true
+          prerelease: false
+          make_latest: true
           body: |
             ## CC Switch ${{ github.ref_name }}
 
-            🌐 **Only Official Website / 唯一官方网站 / 唯一の公式サイト**: [ccswitch.io](https://ccswitch.io)
+            🌐 **GitHub Releases**: [https://github.com/yaoliwen542-sketch/cc-switch/releases](https://github.com/yaoliwen542-sketch/cc-switch/releases)
 
             Claude Code 供应商切换工具
 
