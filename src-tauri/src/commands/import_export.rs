@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
@@ -14,6 +14,20 @@ use crate::error::AppError;
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
 
+/// 校验导入/导出路径：拒绝空路径、非 .sql 扩展名和包含 .. 的路径。
+fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
+    if path.as_os_str().is_empty() {
+        return Err(AppError::InvalidInput("路径不能为空".to_string()));
+    }
+    if path.extension().map(|e| e != "sql").unwrap_or(true) {
+        return Err(AppError::InvalidInput("仅支持 .sql 文件".to_string()));
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(AppError::InvalidInput("路径不能包含 ..".to_string()));
+    }
+    Ok(())
+}
+
 // ─── File import/export ──────────────────────────────────────
 
 /// 导出数据库为 SQL 备份
@@ -25,6 +39,7 @@ pub async fn export_config_to_file(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let target_path = PathBuf::from(&filePath);
+        validate_import_export_path(&target_path)?;
         db.export_sql(&target_path)?;
         Ok::<_, AppError>(json!({
             "success": true,
@@ -47,6 +62,7 @@ pub async fn import_config_from_file(
     let db_for_sync = db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path_buf = PathBuf::from(&filePath);
+        validate_import_export_path(&path_buf)?;
         let backup_id = db.import_sql(&path_buf)?;
         let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
         if let Some(msg) = warning.as_ref() {

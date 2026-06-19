@@ -200,6 +200,7 @@ impl Database {
         let metadata = fs::metadata(path).map_err(|e| AppError::io(path, e))?;
         let file_size = metadata.len();
         let footer = CC_SWITCH_SQL_EXPORT_FOOTER.as_bytes();
+        let expected = CC_SWITCH_SQL_EXPORT_FOOTER.trim_end().as_bytes();
         let read_len = std::cmp::min(file_size, footer.len() as u64 + 64);
         let offset = file_size.saturating_sub(read_len);
 
@@ -208,8 +209,17 @@ impl Database {
         let mut tail = vec![0u8; read_len as usize];
         file.read_exact(&mut tail).map_err(|e| AppError::io(path, e))?;
 
-        let tail_str = String::from_utf8_lossy(&tail);
-        if tail_str.contains(CC_SWITCH_SQL_EXPORT_FOOTER.trim_end()) {
+        // 去掉尾部空白字符后，严格比较文件末尾是否以 footer 结尾
+        let trimmed_end = tail
+            .iter()
+            .rposition(|b| !b.is_ascii_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let trimmed = &tail[..trimmed_end];
+
+        if trimmed.len() >= expected.len()
+            && &trimmed[trimmed.len() - expected.len()..] == expected
+        {
             return Ok(());
         }
 
