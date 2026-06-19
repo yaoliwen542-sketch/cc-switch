@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 use serde_json::{json, Value};
+use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -16,7 +17,7 @@ use crate::store::AppState;
 
 /// 校验导入/导出路径。
 /// 该路径来自 Tauri 文件对话框，但仍需做纵深防御：拒绝空路径、非 .sql
-/// 扩展名、相对路径、包含 .. 的路径，以及指向系统关键目录的绝对路径。
+/// 扩展名、包含 .. 的路径，以及解析后落在系统关键目录下的路径。
 fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
     if path.as_os_str().is_empty() {
         return Err(AppError::InvalidInput("路径不能为空".to_string()));
@@ -27,10 +28,11 @@ fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
     if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(AppError::InvalidInput("路径不能包含 ..".to_string()));
     }
-    if !path.is_absolute() {
-        return Err(AppError::InvalidInput("路径必须是绝对路径".to_string()));
-    }
-    if is_system_critical_path(path) {
+
+    // 解析真实路径（规范化分隔符、大小写、Windows 短名、符号链接），
+    // 防止黑名单被各种形式绕过。
+    let resolved = resolve_path_for_validation(path)?;
+    if is_system_critical_path(&resolved) {
         return Err(AppError::InvalidInput(
             "不能操作系统关键目录下的文件".to_string(),
         ));
@@ -38,31 +40,54 @@ fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 解析路径用于安全校验。
+/// - 若目标文件存在，直接 canonicalize。
+/// - 若目标文件不存在（导出场景），canonicalize 其父目录后再拼接文件名。
+fn resolve_path_for_validation(path: &Path) -> Result<PathBuf, AppError> {
+    if path.exists() {
+        fs::canonicalize(path).map_err(|e| AppError::io(path, e))
+    } else if let Some(parent) = path.parent() {
+        let canonical_parent = fs::canonicalize(parent).map_err(|e| AppError::io(parent, e))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| AppError::InvalidInput("无效的文件名".to_string()))?;
+        Ok(canonical_parent.join(file_name))
+    } else {
+        Err(AppError::InvalidInput("无效的路径".to_string()))
+    }
+}
+
 /// 判断路径是否落在系统关键目录下。
 #[cfg(windows)]
 fn is_system_critical_path(path: &Path) -> bool {
-    let lower = path.to_string_lossy().to_lowercase();
+    let normalized = strip_unc_prefix(path);
     const ROOTS: &[&str] = &[
-        r"c:\windows",
-        r"c:\program files",
-        r"c:\program files (x86)",
-        r"c:\windows\system32",
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\Windows\System32",
     ];
     ROOTS.iter().any(|root| {
-        lower == *root || lower.starts_with(&format!("{root}\\"))
+        let root_path = Path::new(root);
+        normalized == root_path || normalized.starts_with(root_path)
     })
+}
+
+#[cfg(windows)]
+fn strip_unc_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
 }
 
 #[cfg(not(windows))]
 fn is_system_critical_path(path: &Path) -> bool {
-    let normalized: PathBuf = path.components().collect();
     const ROOTS: &[&str] = &[
         "/etc", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/sys", "/proc", "/dev",
         "/boot", "/opt",
     ];
     ROOTS.iter().any(|root| {
         let root_path = Path::new(root);
-        normalized == root_path || normalized.starts_with(root_path)
+        path == root_path || path.starts_with(root_path)
     })
 }
 
