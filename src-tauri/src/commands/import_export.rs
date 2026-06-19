@@ -14,7 +14,9 @@ use crate::error::AppError;
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
 
-/// 校验导入/导出路径：拒绝空路径、非 .sql 扩展名和包含 .. 的路径。
+/// 校验导入/导出路径。
+/// 该路径来自 Tauri 文件对话框，但仍需做纵深防御：拒绝空路径、非 .sql
+/// 扩展名、相对路径、包含 .. 的路径，以及指向系统关键目录的绝对路径。
 fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
     if path.as_os_str().is_empty() {
         return Err(AppError::InvalidInput("路径不能为空".to_string()));
@@ -25,7 +27,43 @@ fn validate_import_export_path(path: &Path) -> Result<(), AppError> {
     if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(AppError::InvalidInput("路径不能包含 ..".to_string()));
     }
+    if !path.is_absolute() {
+        return Err(AppError::InvalidInput("路径必须是绝对路径".to_string()));
+    }
+    if is_system_critical_path(path) {
+        return Err(AppError::InvalidInput(
+            "不能操作系统关键目录下的文件".to_string(),
+        ));
+    }
     Ok(())
+}
+
+/// 判断路径是否落在系统关键目录下。
+#[cfg(windows)]
+fn is_system_critical_path(path: &Path) -> bool {
+    let lower = path.to_string_lossy().to_lowercase();
+    const ROOTS: &[&str] = &[
+        r"c:\windows",
+        r"c:\program files",
+        r"c:\program files (x86)",
+        r"c:\windows\system32",
+    ];
+    ROOTS.iter().any(|root| {
+        lower == *root || lower.starts_with(&format!("{root}\\"))
+    })
+}
+
+#[cfg(not(windows))]
+fn is_system_critical_path(path: &Path) -> bool {
+    let normalized: PathBuf = path.components().collect();
+    const ROOTS: &[&str] = &[
+        "/etc", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/sys", "/proc", "/dev",
+        "/boot", "/opt",
+    ];
+    ROOTS.iter().any(|root| {
+        let root_path = Path::new(root);
+        normalized == root_path || normalized.starts_with(root_path)
+    })
 }
 
 // ─── File import/export ──────────────────────────────────────
