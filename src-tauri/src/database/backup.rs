@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+const CC_SWITCH_SQL_EXPORT_FOOTER: &str = "COMMIT;\nPRAGMA foreign_keys=ON;\n";
 
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
@@ -63,7 +64,9 @@ impl Database {
             fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
         }
 
-        crate::config::atomic_write(target_path, dump.as_bytes())
+        crate::config::atomic_write(target_path, dump.as_bytes())?;
+        Self::validate_export_file_footer(target_path)?;
+        Ok(())
     }
 
     /// 从 SQL 文件导入，返回生成的备份 ID（若无备份则为空字符串）
@@ -98,6 +101,7 @@ impl Database {
     ) -> Result<String, AppError> {
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         Self::validate_cc_switch_sql_export(sql_content)?;
+        Self::validate_sql_completeness(sql_content)?;
 
         // 导入前备份现有数据库
         let backup_path = self.backup_database_file()?;
@@ -119,7 +123,7 @@ impl Database {
 
         temp_conn
             .execute_batch(sql_content)
-            .map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+            .map_err(|e| AppError::Database(format!("执行 SQL 导入失败（备份文件可能已损坏或不完整，请重新导出并确认传输完成）: {e}")))?;
 
         // 补齐缺失表/索引并进行基础校验
         Self::create_tables_on_conn(&temp_conn)?;
@@ -173,6 +177,45 @@ impl Database {
             "backup.sql.invalid_format",
             "仅支持导入由 CC Switch 导出的 SQL 备份文件。",
             "Only SQL backups exported by CC Switch are supported.",
+        ))
+    }
+
+    /// 校验 SQL 字符串是否包含完整的结束标记，用于导入前快速识别截断文件
+    fn validate_sql_completeness(sql: &str) -> Result<(), AppError> {
+        let trimmed = sql.trim_end();
+        let expected = CC_SWITCH_SQL_EXPORT_FOOTER.trim_end();
+        if trimmed.ends_with(expected) {
+            return Ok(());
+        }
+
+        Err(AppError::Database(
+            "备份文件不完整或已损坏，请重新导出。".to_string(),
+        ))
+    }
+
+    /// 校验已写入磁盘的导出文件末尾是否包含完整结束标记
+    fn validate_export_file_footer(path: &Path) -> Result<(), AppError> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let metadata = fs::metadata(path).map_err(|e| AppError::io(path, e))?;
+        let file_size = metadata.len();
+        let footer = CC_SWITCH_SQL_EXPORT_FOOTER.as_bytes();
+        let read_len = std::cmp::min(file_size, footer.len() as u64 + 64);
+        let offset = file_size.saturating_sub(read_len);
+
+        let mut file = fs::File::open(path).map_err(|e| AppError::io(path, e))?;
+        file.seek(SeekFrom::Start(offset)).map_err(|e| AppError::io(path, e))?;
+        let mut tail = vec![0u8; read_len as usize];
+        file.read_exact(&mut tail).map_err(|e| AppError::io(path, e))?;
+
+        let tail_str = String::from_utf8_lossy(&tail);
+        if tail_str.contains(CC_SWITCH_SQL_EXPORT_FOOTER.trim_end()) {
+            return Ok(());
+        }
+
+        let _ = fs::remove_file(path);
+        Err(AppError::Database(
+            "备份文件导出不完整，请重新导出。".to_string(),
         ))
     }
 
@@ -468,7 +511,7 @@ impl Database {
             }
         }
 
-        output.push_str("COMMIT;\nPRAGMA foreign_keys=ON;\n");
+        output.push_str(CC_SWITCH_SQL_EXPORT_FOOTER);
         Ok(output)
     }
 

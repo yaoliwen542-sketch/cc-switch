@@ -1235,3 +1235,56 @@ fn import_sql_accepts_cc_switch_exported_backup() {
         "imported providers should contain test-provider"
     );
 }
+
+#[test]
+fn export_sql_produces_complete_file() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let state = create_test_state().expect("create test state");
+    let export_path = home.join("complete-export.sql");
+    state
+        .db
+        .export_sql(&export_path)
+        .expect("export should succeed");
+
+    let content = fs::read_to_string(&export_path).expect("read exported file");
+    assert!(
+        content.trim_end().ends_with("PRAGMA foreign_keys=ON;"),
+        "exported SQL should end with the complete footer"
+    );
+    assert!(
+        content.contains("COMMIT;"),
+        "exported SQL should contain COMMIT statement"
+    );
+}
+
+#[test]
+fn import_sql_rejects_truncated_file() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    // Create a valid-looking CC Switch export but truncate it in the middle
+    // of an INSERT column list, matching the real-world failure mode.
+    let truncated = format!(
+        "{}\nPRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY, cache_creation_cost_usd TEXT);\nINSERT INTO \"proxy_request_logs\" (\"request_id\", \"cache_read_cost_usd\", \"c",
+        "-- CC Switch SQLite 导出"
+    );
+
+    let import_path = home.join("truncated-export.sql");
+    fs::write(&import_path, truncated).expect("write truncated sql");
+
+    let state = create_test_state().expect("create test state");
+    let err = state
+        .db
+        .import_sql(&import_path)
+        .expect_err("truncated sql should be rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("不完整") || message.contains("损坏"),
+        "expected user-friendly truncated-file error, got: {message}"
+    );
+}
