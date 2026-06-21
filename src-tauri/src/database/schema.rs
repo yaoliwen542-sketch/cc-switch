@@ -619,6 +619,7 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_request_logs (
             request_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL, model TEXT NOT NULL,
             request_model TEXT,
+            pricing_model TEXT,
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
@@ -626,10 +627,11 @@ impl Database {
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
-            cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
+            cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
+            data_source TEXT NOT NULL DEFAULT 'proxy'
         )", [])?;
 
-        // 为已存在的表添加新字段
+        // 为已存在的表添加新字段（按 v11/v12 顺序，补全所有可能缺失的列）
         Self::add_column_if_missing(conn, "proxy_request_logs", "provider_type", "TEXT")?;
         Self::add_column_if_missing(
             conn,
@@ -645,6 +647,8 @@ impl Database {
         )?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "pricing_model", "TEXT")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "data_source", "TEXT NOT NULL DEFAULT 'proxy'")?;
 
         // model_pricing 表
         conn.execute(
