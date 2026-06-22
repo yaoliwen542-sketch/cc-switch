@@ -374,10 +374,7 @@
         "description": "Automatically compress history in proxy mode to avoid exceeding provider context windows",
         "enableProxy": "Enable proxy-mode rolling context",
         "enableProxyDescription": "When enabled, all requests routed through cc-switch are automatically compressed based on the current provider's context window and compact percentage.",
-        "preserveRounds": "Preserve recent rounds",
-        "preserveRoundsHint": "Number of recent user/assistant exchanges to keep in full (system prompt is always preserved). Default: 6",
-        "target": "Target after compression",
-        "targetHint": "Target context window ratio after compression (0.1-0.95). Lower = more aggressive compression. Default: 0.6"
+        "defaultsHint": "Preserve recent rounds (default 6) and target after compression (default 60%) use built-in defaults."
       },
       "data": {
         "title": "Data Management",

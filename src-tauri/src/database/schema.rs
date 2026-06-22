@@ -2677,4 +2677,30 @@ impl Database {
         log::info!("已为表 {table} 添加缺失列 {column}");
         Ok(true)
     }
+
+    /// 修复核心表中可能缺失的列。正常迁移链应该已经处理过这些列，但某些早期
+    /// 版本或手动修改过的数据库可能出现列缺失，导致 proxy 日志写入/查询失败。
+    /// 该修复在常规迁移完成后执行，作为最后一道防线。
+    pub(crate) fn repair_missing_core_columns(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(conn, "proxy_request_logs", "pricing_model", "TEXT")?;
+        }
+
+        if Self::table_exists(conn, "usage_daily_rollups")? {
+            Self::add_column_if_missing(
+                conn,
+                "usage_daily_rollups",
+                "request_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "usage_daily_rollups",
+                "pricing_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+        }
+
+        Ok(())
+    }
 }

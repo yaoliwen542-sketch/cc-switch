@@ -10,8 +10,6 @@ import {
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ProxyPanel } from "@/components/proxy";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
@@ -165,53 +163,12 @@ export function ProxyTabContent({
                 }
               />
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="proxyRollingContextPreserveRounds">
-                    {t("settings.advanced.rollingContext.preserveRounds")}
-                  </Label>
-                  <Input
-                    id="proxyRollingContextPreserveRounds"
-                    type="number"
-                    min={1}
-                    value={settings?.proxyRollingContextPreserveRounds ?? ""}
-                    onChange={(e) => {
-                      const value =
-                        e.target.value === ""
-                          ? undefined
-                          : parseInt(e.target.value, 10);
-                      void onAutoSave({ proxyRollingContextPreserveRounds: value });
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {t("settings.advanced.rollingContext.preserveRoundsHint")}
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="proxyRollingContextTarget">
-                    {t("settings.advanced.rollingContext.target")}
-                  </Label>
-                  <Input
-                    id="proxyRollingContextTarget"
-                    type="number"
-                    min={0.1}
-                    max={0.95}
-                    step={0.05}
-                    value={settings?.proxyRollingContextTarget ?? ""}
-                    onChange={(e) => {
-                      const value =
-                        e.target.value === ""
-                          ? undefined
-                          : parseFloat(e.target.value);
-                      void onAutoSave({ proxyRollingContextTarget: value });
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {t("settings.advanced.rollingContext.targetHint")}
-                  </p>
-                </div>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.advanced.rollingContext.defaultsHint", {
+                  defaultValue:
+                    "保留最近轮数和压缩后目标比例已使用内置默认值，无需手动配置。",
+                })}
+              </p>
             </div>
           </AccordionContent>
         </AccordionItem>

@@ -136,6 +136,12 @@ impl Database {
         }
 
         db.apply_schema_migrations()?;
+        {
+            let conn = lock_conn!(db.conn);
+            if let Err(e) = Database::repair_missing_core_columns(&conn) {
+                log::warn!("修复核心表缺失列失败: {e}");
+            }
+        }
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
         }
