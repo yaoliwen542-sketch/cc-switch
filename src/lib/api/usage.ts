@@ -142,6 +142,22 @@ export const usageApi = {
     return invoke("get_request_detail", { requestId });
   },
 
+  getUsageStatsDiagnostics: async (): Promise<{
+    userVersion: number;
+    expectedVersion: number;
+    columns: Array<{
+      name: string;
+      type: string;
+      notNull: boolean;
+      defaultValue: string | null;
+    }>;
+    totalRows: number;
+    todayRows: number;
+    mostRecentRow: Record<string, unknown> | null;
+  }> => {
+    return invoke("get_usage_stats_diagnostics");
+  },
+
   getModelPricing: async (): Promise<ModelPricing[]> => {
     return invoke("get_model_pricing");
   },

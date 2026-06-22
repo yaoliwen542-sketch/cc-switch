@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Coins,
   LayoutGrid,
+  Bug,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
@@ -29,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useQueryClient } from "@tanstack/react-query";
+import { usageApi } from "@/lib/api";
 import { usageKeys, useModelStats, useProviderStats } from "@/lib/query/usage";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import {
@@ -38,6 +40,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { PricingConfigPanel } from "@/components/usage/PricingConfigPanel";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
@@ -74,6 +77,23 @@ export function UsageDashboard() {
   );
   const [model, setModel] = useState<string | undefined>(undefined);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(30000);
+  const [diagnostics, setDiagnostics] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+
+  const runDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    try {
+      const result = await usageApi.getUsageStatsDiagnostics();
+      setDiagnostics(result);
+    } catch (error) {
+      setDiagnostics({ error: String(error) });
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
 
   // 切应用时清掉下游筛选，避免留下一个在新范围内查无数据的"幽灵"组合；
   // 切 Provider 同理清掉模型（模型选项随 Provider 级联）。
@@ -280,9 +300,27 @@ export function UsageDashboard() {
               triggerLabel={rangeLabel}
               onApply={(nextRange) => setRange(nextRange)}
             />
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 text-xs"
+              onClick={runDiagnostics}
+              disabled={diagnosticsLoading}
+              title={t("usage.diagnostics", { defaultValue: "Diagnostics" })}
+            >
+              <Bug className="h-3.5 w-3.5 mr-1" />
+              {t("usage.diagnostics", { defaultValue: "Diagnostics" })}
+            </Button>
           </div>
         </div>
       </div>
+
+      {diagnostics && (
+        <div className="rounded-lg border bg-muted/30 p-3 text-xs font-mono overflow-auto max-h-60">
+          <pre>{JSON.stringify(diagnostics, null, 2)}</pre>
+        </div>
+      )}
 
       <UsageHero
         range={range}
