@@ -987,8 +987,37 @@ impl RequestForwarder {
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
                     let category = self.categorize_proxy_error(&e);
 
+                    // 上下文/Token 长度超限：当前供应商的模型窗口不够大，但换一家供应商
+                    // （更大的窗口 / 不同模型）可以成功。属于"对当前供应商中性"的失败——
+                    // 不应污染它的健康度，但要让故障转移继续。
+                    let is_context_overflow = matches!(
+                        &e,
+                        ProxyError::UpstreamError { status, body, .. } if
+                            super::error::is_context_length_overflow(*status, body.as_deref())
+                    );
+
                     match category {
                         ErrorCategory::Retryable => {
+                            if is_context_overflow {
+                                // 上下文超限：释放熔断器名额 + 跳过健康度扣分，
+                                // 但仍继续故障转移（让别的 provider 接手）。
+                                self.router
+                                    .release_permit_neutral(
+                                        &provider.id,
+                                        app_type_str,
+                                        used_half_open_permit,
+                                    )
+                                    .await;
+                                log::info!(
+                                    "[{app_type_str}] Provider {} 上下文窗口超限（请求超出当前模型最大 token），继续尝试下一个供应商: {}",
+                                    provider.name,
+                                    e
+                                );
+                                last_error = Some(e);
+                                last_provider = Some(provider.clone());
+                                continue;
+                            }
+
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
                             let _ = self
                                 .router
@@ -2225,10 +2254,23 @@ impl RequestForwarder {
             //
             // 其他 4xx（401/403/404/408/409/429/451 等）和全部 5xx 都保留
             // Retryable —— 换一家 provider 可能持有不同的 key、配额、地域或模型映射。
-            ProxyError::UpstreamError { status, .. } => match *status {
-                400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => ErrorCategory::NonRetryable,
-                _ => ErrorCategory::Retryable,
-            },
+            //
+            // 特殊例外：400/413/414 命中"上下文/Token 长度超限"文案时，重新归类为
+            // Retryable —— 这是当前供应商模型窗口不够大，换一家配置了更大窗口或不同
+            // 模型的供应商可以成功响应（典型场景：260k 请求命中 262144 窗口的模型，
+            // 故障转移到 1M 窗口的模型即可）。
+            ProxyError::UpstreamError { status, body } => {
+                let body_str = body.as_deref();
+                if super::error::is_context_length_overflow(*status, body_str) {
+                    return ErrorCategory::Retryable;
+                }
+                match *status {
+                    400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => {
+                        ErrorCategory::NonRetryable
+                    }
+                    _ => ErrorCategory::Retryable,
+                }
+            }
             // Provider 级配置/转换问题：换一个 Provider 可能就能成功
             ProxyError::ConfigError(_) => ErrorCategory::Retryable,
             ProxyError::TransformError(_) => ErrorCategory::Retryable,
@@ -2782,6 +2824,67 @@ mod tests {
     #[test]
     fn single_provider_has_no_terminal_all_failed_log() {
         assert!(build_terminal_failure_log(1, 1, None).is_none());
+    }
+
+    #[test]
+    fn categorize_context_length_overflow_400_is_retryable() {
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"Your request exceeded model token limit: 262144 (requested: 263669)","type":"invalid_request_error"}}"#
+                    .to_string(),
+            ),
+        };
+        // 上下文/Token 长度超限 → Retryable（让故障转移继续尝试下一个供应商）
+        assert_eq!(
+            fwd.categorize_proxy_error(&err),
+            ErrorCategory::Retryable
+        );
+    }
+
+    #[test]
+    fn categorize_unrelated_400_remains_non_retryable() {
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"Invalid API key","type":"invalid_request_error"}}"#.to_string()),
+        };
+        // 普通 400（认证/格式错误）仍然 NonRetryable
+        assert_eq!(
+            fwd.categorize_proxy_error(&err),
+            ErrorCategory::NonRetryable
+        );
+    }
+
+    #[test]
+    fn categorize_context_overflow_413_is_retryable() {
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 413,
+            body: Some(
+                r#"{"error":{"message":"Payload too large: request exceeds the maximum context length (200000 tokens)"}}}"#
+                    .to_string(),
+            ),
+        };
+        assert_eq!(
+            fwd.categorize_proxy_error(&err),
+            ErrorCategory::Retryable
+        );
+    }
+
+    #[test]
+    fn categorize_429_remains_retryable_even_without_text_match() {
+        // 429 没有命中 overflow 文本，但 4xx 非黑名单状态码本来就在 Retryable 分支。
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"rate limit exceeded"}}"#.to_string()),
+        };
+        assert_eq!(
+            fwd.categorize_proxy_error(&err),
+            ErrorCategory::Retryable
+        );
     }
 
     #[test]

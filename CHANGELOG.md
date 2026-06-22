@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.12] - 2026-06-23
+
+### Fixed
+
+- **Failover on Context-Length Overflow (400/413)**: When the current provider's model window is smaller than the request (e.g. an upstream returns `Your request exceeded model token limit: 262144 (requested: 263669)`), the forwarder now reclassifies the 400/413/414 as `Retryable` and continues the failover to the next provider in the route. The overflowed provider's circuit-breaker health is **not** penalised (`release_permit_neutral` instead of `record_result(false, ...)`) so capacity-too-small doesn't pollute its health score. Detection covers ~30 common token-limit error strings from OpenAI / Anthropic / Gemini / Azure / HF / vLLM / Ollama and Chinese relay services; non-overflow 400s (e.g. invalid API key) remain `NonRetryable`.
+
+## [3.17.11] - 2026-06-22
+
 ### Added
 
 - **Global Proxy Rolling Context**: Proxy-mode rolling context is now controlled by a single global switch in Settings → Proxy. When enabled, compression uses each provider's context window and direct-mode compact trigger percentage, so auto-routed requests always respect the current supplier's limits. Preserve-rounds and target-ratio are global user preferences.
@@ -19,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **UTF-8 Safe Context Snippets**: Fixed a panic in rolling-context snippet truncation when multi-byte UTF-8 characters (e.g. Chinese project documentation) crossed the byte truncation boundary.
+- **Missing `pricing_model` / `request_model` Columns on Existing Databases**: Users whose `proxy_request_logs` / `usage_daily_rollups` tables pre-date schema v12 were seeing empty usage stats because the `pricing_model` column didn't exist. Added a startup `repair_missing_core_columns` hook that adds the missing column (idempotent), so the dashboard reappears without needing a manual SQL fix.
 
 ## [3.16.3] - 2026-06-14
 
