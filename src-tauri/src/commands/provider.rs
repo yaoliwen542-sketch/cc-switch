@@ -860,8 +860,14 @@ pub fn get_provider_rolling_context(
     let provider = providers.get(&provider_id).ok_or("Provider not found")?;
 
     let config = provider.meta.as_ref().map(|meta| {
+        let settings = crate::settings::get_settings();
         serde_json::json!({
             "contextWindow": meta.context_window,
+            "nativeAutoCompactPct": meta.native_auto_compact_pct,
+            "proxyRollingContextEnabled": settings.proxy_rolling_context_enabled,
+            "proxyRollingContextPreserveRounds": settings.proxy_rolling_context_preserve_rounds,
+            "proxyRollingContextTarget": settings.proxy_rolling_context_target,
+            // Legacy per-provider fields kept for backward compatibility.
             "rollingContextEnabled": meta.rolling_context_enabled,
             "rollingContextThreshold": meta.rolling_context_threshold,
             "rollingContextPreserveRounds": meta.rolling_context_preserve_rounds,

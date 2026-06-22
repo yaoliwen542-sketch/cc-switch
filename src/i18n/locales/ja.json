@@ -171,6 +171,29 @@
         "oauthTitle": "OAuth 認証モード",
         "oauthHint": "Google 公式は OAuth 個人認証を使用するため API Key は不要です。初回利用時にブラウザが開きます。",
         "apiKeyPlaceholder": "Gemini API Key を入力"
+      },
+      "rollingContext": {
+        "title": "コンテキスト管理",
+        "overviewHint": "各プロバイダーはコンテキストウィンドウと圧縮トリガー率を設定するだけ。プロキシモードのグローバルスイッチは「設定 → プロキシ」にあります。",
+        "proxySectionTitle": "コンテキストウィンドウ",
+        "enabled": "ローリングコンテキストを有効化（プロキシモード）",
+        "enabledHint": "cc-switch はプロキシ層で古い履歴を自動圧縮します（システムプロンプトと最近 N ラウンドの完全な会話を保持）。プロキシサービスの実行が必要です。",
+        "contextWindowLabel": "コンテキストウィンドウ",
+        "contextWindowHint": "このプロバイダーのコンテキストウィンドウサイズ（トークン数）。プロキシモードとダイレクトモードの両方で使用されます。",
+        "threshold": "圧縮しきい値",
+        "thresholdHint": "自動圧縮をトリガーするコンテキストウィンドウ比率（0.1-0.99）。デフォルト: 0.8",
+        "preserveRounds": "保持する最近のラウンド数",
+        "preserveRoundsHint": "完全に保持する最近のユーザー/アシスタントのラウンド数（システムプロンプトは常に保持）。デフォルト: 6",
+        "target": "圧縮後の目標比率",
+        "targetHint": "圧縮後のコンテキストウィンドウ目標比率（0.1-0.95）。低いほど積極的に圧縮。デフォルト: 0.6",
+        "nativeSectionTitle": "自動圧縮",
+        "nativeEnabled": "Claude Code ネイティブ自動圧縮を有効化",
+        "nativeEnabledHint": "ルーティングがオフの場合、Claude Code の /compact が早期に発火します（デフォルト 60%）。",
+        "nativeConfigHint": "Claude Code はこのプロバイダーの settings.json からこれらの環境変数を読み取り、圧縮タイミングを決定します。プロキシモードでは、この率も圧縮しきい値として再利用されます。",
+        "nativePct": "圧縮トリガー率",
+        "nativePctHint": "/compact をトリガーするコンテキストウィンドウの割合（10-99）。デフォルト: 60。低いほど早く圧縮。プロキシモードのローリングコンテキストが有効な場合、この値が圧縮しきい値として再利用されます。",
+        "nativeWindow": "コンテキストウィンドウ（トークン数）",
+        "nativeWindowHint": "Claude Code が分母として使用するコンテキストウィンドウ。空欄の場合、上記のコンテキストウィンドウ値が使用されます。"
       }
     }
   },
@@ -358,6 +381,16 @@
       "globalProxy": {
         "title": "グローバル送信プロキシ",
         "description": "CC Switch が外部 API にアクセスする際のプロキシを設定"
+      },
+      "rollingContext": {
+        "title": "ローリングコンテキスト",
+        "description": "プロキシモードで履歴を自動圧縮し、プロバイダーのコンテキストウィンドウを超えるのを防ぐ",
+        "enableProxy": "プロキシモードのローリングコンテキストを有効化",
+        "enableProxyDescription": "有効にすると、cc-switch 経由のすべてのリクエストが、現在のプロバイダーのコンテキストウィンドウと圧縮率に基づいて自動圧縮されます。",
+        "preserveRounds": "保持する最近のラウンド数",
+        "preserveRoundsHint": "完全に保持する最近のユーザー/アシスタントのラウンド数（システムプロンプトは常に保持）。デフォルト: 6",
+        "target": "圧縮後の目標比率",
+        "targetHint": "圧縮後のコンテキストウィンドウ目標比率（0.1-0.95）。低いほど積極的に圧縮。デフォルト: 0.6"
       },
       "data": {
         "title": "データ管理",

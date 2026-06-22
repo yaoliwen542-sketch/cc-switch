@@ -176,26 +176,26 @@
       "contextWindowPlaceholder": "e.g. 200000",
       "rollingContext": {
         "title": "Context Management",
-        "overviewHint": "The two modes are independent and can be enabled at the same time. Proxy mode requires the cc-switch router to be active; direct mode kicks in when the router is off or a request bypasses the proxy.",
-        "proxySectionTitle": "Proxy mode (requires cc-switch router)",
+        "overviewHint": "Each provider only needs a context window and compact trigger percentage; the proxy-mode global switch is in Settings → Proxy.",
+        "proxySectionTitle": "Context Window",
         "enabled": "Enable rolling context (proxy mode)",
         "enabledHint": "cc-switch automatically compresses older history at the proxy layer, preserving the system prompt and the last N full rounds. Requires the proxy service to be running.",
         "contextWindowLabel": "Context Window",
-        "contextWindowHint": "Model's context window size in tokens. The direct-mode field below reuses this value if left empty.",
+        "contextWindowHint": "This provider's context window size in tokens. Used by both proxy and direct modes.",
         "threshold": "Compression Threshold",
         "thresholdHint": "Context window ratio that triggers auto-compression (0.1–0.99). Default: 0.8",
         "preserveRounds": "Preserve Recent Rounds",
         "preserveRoundsHint": "Number of recent user/assistant exchanges to keep in full (system prompt is always preserved). Default: 6",
         "target": "Target After Compression",
         "targetHint": "Target context window ratio after compression (0.1-0.95). Lower = more aggressive compression. Default: 0.6",
-        "nativeSectionTitle": "Direct mode (when router is off)",
+        "nativeSectionTitle": "Auto-compact",
         "nativeEnabled": "Enable Claude Code native auto-compact",
         "nativeEnabledHint": "When the router is off, Claude Code's own /compact fires earlier (default 60% instead of 95%) to prevent deadlocks with upstream providers.",
-        "nativeConfigHint": "Claude Code reads these env vars from this provider's settings.json to decide when to compact.",
+        "nativeConfigHint": "Claude Code reads these env vars from this provider's settings.json to decide when to compact. The percentage is also reused as the proxy-mode compression threshold.",
         "nativePct": "Compact trigger percentage",
-        "nativePctHint": "Percentage of context window to trigger /compact (10-99). Default: 60. Lower = compact earlier = safer.",
+        "nativePctHint": "Percentage of context window to trigger /compact (10-99). Default: 60. Lower = compact earlier = safer. When proxy rolling context is enabled, this value is reused as the compression threshold.",
         "nativeWindow": "Context window (tokens)",
-        "nativeWindowHint": "The context window Claude Code uses as denominator. If empty, uses the proxy-mode value above."
+        "nativeWindowHint": "The context window Claude Code uses as denominator. If empty, uses the context window value above."
       }
     }
   },
@@ -383,6 +383,16 @@
       "globalProxy": {
         "title": "Global Outbound Proxy",
         "description": "Configure proxy for CC Switch to access external APIs"
+      },
+      "rollingContext": {
+        "title": "Rolling Context",
+        "description": "Automatically compress history in proxy mode to avoid exceeding provider context windows",
+        "enableProxy": "Enable proxy-mode rolling context",
+        "enableProxyDescription": "When enabled, all requests routed through cc-switch are automatically compressed based on the current provider's context window and compact percentage.",
+        "preserveRounds": "Preserve recent rounds",
+        "preserveRoundsHint": "Number of recent user/assistant exchanges to keep in full (system prompt is always preserved). Default: 6",
+        "target": "Target after compression",
+        "targetHint": "Target context window ratio after compression (0.1-0.95). Lower = more aggressive compression. Default: 0.6"
       },
       "data": {
         "title": "Data Management",

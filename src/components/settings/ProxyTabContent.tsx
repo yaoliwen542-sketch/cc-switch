@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Server, Activity, Zap, Globe, ShieldAlert } from "lucide-react";
+import { Server, Activity, Zap, Globe, ShieldAlert, ScrollText } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ProxyPanel } from "@/components/proxy";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
@@ -128,6 +130,89 @@ export function ProxyTabContent({
               onToggleProxy={handleToggleProxy}
               isProxyPending={isProxyPending}
             />
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* Rolling Context */}
+        <AccordionItem
+          value="rollingContext"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <ScrollText className="h-5 w-5 text-blue-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("settings.advanced.rollingContext.title")}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("settings.advanced.rollingContext.description")}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+            <div className="space-y-6">
+              <ToggleRow
+                icon={<ScrollText className="h-4 w-4 text-blue-500" />}
+                title={t("settings.advanced.rollingContext.enableProxy")}
+                description={t(
+                  "settings.advanced.rollingContext.enableProxyDescription",
+                )}
+                checked={settings?.proxyRollingContextEnabled ?? false}
+                onCheckedChange={(checked) =>
+                  void onAutoSave({ proxyRollingContextEnabled: checked })
+                }
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="proxyRollingContextPreserveRounds">
+                    {t("settings.advanced.rollingContext.preserveRounds")}
+                  </Label>
+                  <Input
+                    id="proxyRollingContextPreserveRounds"
+                    type="number"
+                    min={1}
+                    value={settings?.proxyRollingContextPreserveRounds ?? ""}
+                    onChange={(e) => {
+                      const value =
+                        e.target.value === ""
+                          ? undefined
+                          : parseInt(e.target.value, 10);
+                      void onAutoSave({ proxyRollingContextPreserveRounds: value });
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.advanced.rollingContext.preserveRoundsHint")}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="proxyRollingContextTarget">
+                    {t("settings.advanced.rollingContext.target")}
+                  </Label>
+                  <Input
+                    id="proxyRollingContextTarget"
+                    type="number"
+                    min={0.1}
+                    max={0.95}
+                    step={0.05}
+                    value={settings?.proxyRollingContextTarget ?? ""}
+                    onChange={(e) => {
+                      const value =
+                        e.target.value === ""
+                          ? undefined
+                          : parseFloat(e.target.value);
+                      void onAutoSave({ proxyRollingContextTarget: value });
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.advanced.rollingContext.targetHint")}
+                  </p>
+                </div>
+              </div>
+            </div>
           </AccordionContent>
         </AccordionItem>
 

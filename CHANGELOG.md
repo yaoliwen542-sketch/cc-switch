@@ -5,6 +5,21 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Global Proxy Rolling Context**: Proxy-mode rolling context is now controlled by a single global switch in Settings → Proxy. When enabled, compression uses each provider's context window and direct-mode compact trigger percentage, so auto-routed requests always respect the current supplier's limits. Preserve-rounds and target-ratio are global user preferences.
+- **Migration for Legacy Per-Provider Rolling Context**: On first launch, any provider with `rollingContextEnabled=true` automatically migrates its settings to the new global proxy rolling context.
+
+### Changed
+
+- **Provider Form Simplified**: The provider form no longer shows a separate proxy-mode rolling-context section. Each provider now only configures its context window and direct-mode auto-compact settings, which are reused by proxy rolling context when the global switch is on.
+
+### Fixed
+
+- **UTF-8 Safe Context Snippets**: Fixed a panic in rolling-context snippet truncation when multi-byte UTF-8 characters (e.g. Chinese project documentation) crossed the byte truncation boundary.
+
 ## [3.16.3] - 2026-06-14
 
 Development since v3.16.2 focuses on getting usage accounting right end-to-end — billing route-takeover and format-conversion traffic by the real upstream model and pricing basis (schema v11), counting Claude Code Workflow sub-agent sessions, folding Claude Desktop into the Claude view, refreshing the model pricing seed, and reworking the usage dashboard with global provider/model filters, brand-icon toolbars, and far more resilient quota queries — while hardening the proxy (mislabeled SSE bodies, Codex image rectification, OAuth token and takeover-residue recovery, Hermes duplicate YAML keys), reworking provider configuration (a custom User-Agent override, a unified Codex advanced section, searchable preset selection, a Fable 5 tier, and refreshed Kimi/Unity2/Volcengine/MiniMax presets), and smoothing the update, About-panel, and provider-health experiences.

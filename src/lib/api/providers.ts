@@ -199,10 +199,14 @@ export const providersApi = {
 
   async getRollingContext(providerId: string, appId: AppId): Promise<{
     contextWindow?: number;
+    nativeAutoCompactPct?: number;
+    proxyRollingContextEnabled?: boolean;
+    proxyRollingContextPreserveRounds?: number;
+    proxyRollingContextTarget?: number;
+    // Legacy per-provider fields (backward compatibility)
     rollingContextEnabled?: boolean;
     rollingContextThreshold?: number;
     rollingContextPreserveRounds?: number;
-    rollingContextTarget?: number;
   } | null> {
     return await invoke("get_provider_rolling_context", { app: appId, providerId });
   },

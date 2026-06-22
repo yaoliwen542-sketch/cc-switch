@@ -6,6 +6,7 @@ mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
 mod codex_history_migration;
+mod rolling_context_migration;
 mod commands;
 mod config;
 mod database;
@@ -617,6 +618,28 @@ pub fn run() {
                         }
                         Err(e) => {
                             log::warn!("✗ Codex official history unify migration failed: {e}");
+                        }
+                    }
+
+                    // 把 per-provider 的 rolling context 开关/策略迁移到全局 proxy rolling context。
+                    let db_for_rc_migration = app_state.db.clone();
+                    match crate::rolling_context_migration::maybe_migrate_provider_rolling_context_to_global(
+                        &db_for_rc_migration,
+                    ) {
+                        Ok(outcome) => {
+                            if let Some(reason) = outcome.skipped_reason {
+                                log::debug!("○ Proxy rolling context migration skipped: {reason}");
+                            } else {
+                                log::info!(
+                                    "✓ Proxy rolling context migration completed: enabled={}, preserve_rounds={}, target={}",
+                                    outcome.had_enabled_provider,
+                                    outcome.preserve_rounds,
+                                    outcome.target
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("✗ Proxy rolling context migration failed: {e}");
                         }
                     }
                 });

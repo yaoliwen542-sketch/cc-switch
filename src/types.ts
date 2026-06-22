@@ -372,6 +372,14 @@ export interface Settings {
   // 首选语言（可选，默认中文）
   language?: "en" | "zh" | "zh-TW" | "ja";
 
+  // ===== 代理模式滚动上下文（全局）=====
+  // 是否在代理模式下启用滚动上下文压缩（全局开关）
+  proxyRollingContextEnabled?: boolean;
+  // 代理模式滚动上下文保留的最近完整对话轮数
+  proxyRollingContextPreserveRounds?: number;
+  // 代理模式滚动上下文压缩后的目标窗口比例（0.1-0.95）
+  proxyRollingContextTarget?: number;
+
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;
 
@@ -432,6 +440,12 @@ export interface Settings {
       sourceProviderIds?: string[];
       migratedJsonlFiles?: number;
       migratedStateRows?: number;
+    };
+    proxyRollingContextV1?: {
+      completedAt: string;
+      hadEnabledProvider: boolean;
+      preserveRounds: number;
+      target: number;
     };
   };
 }

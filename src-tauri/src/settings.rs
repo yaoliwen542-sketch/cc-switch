@@ -4,6 +4,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
+/// 全局锁，用于串行化所有修改 settings.json 的测试，避免并发测试互相覆盖。
+pub static TEST_SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::services::skill::{SkillStorageLocation, SyncMethod};
@@ -291,6 +298,9 @@ pub struct LocalMigrations {
     /// 这样重新开启能把"关闭期间"落入 openai 桶的官方会话补迁进来。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_official_history_unify_v1: Option<CodexOfficialHistoryUnifyMigration>,
+    /// Per-provider rolling context 配置迁移到全局 proxy rolling context 的标记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_rolling_context_v1: Option<ProxyRollingContextMigration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +339,22 @@ pub struct CodexOfficialHistoryUnifyMigration {
     /// 切换 codex_config_dir 后旧标记不会挡住新目录的迁移。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_dir: Option<String>,
+}
+
+/// 标记 per-provider rolling context 配置已迁移到全局 proxy rolling context。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyRollingContextMigration {
+    pub completed_at: String,
+    /// 迁移时是否发现至少一个启用了 rolling context 的供应商
+    #[serde(default)]
+    pub had_enabled_provider: bool,
+    /// 迁移时采用的 preserve_rounds（来自第一个有值的供应商，或默认值）
+    #[serde(default)]
+    pub preserve_rounds: u32,
+    /// 迁移时采用的 target（来自第一个有值的供应商，或默认值）
+    #[serde(default)]
+    pub target: f64,
 }
 
 /// 应用设置结构
@@ -397,6 +423,17 @@ pub struct AppSettings {
     pub common_config_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+
+    // ===== 代理模式滚动上下文（全局）=====
+    /// 是否在代理模式下启用滚动上下文压缩（全局开关）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_rolling_context_enabled: Option<bool>,
+    /// 代理模式滚动上下文保留的最近完整对话轮数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_rolling_context_preserve_rounds: Option<u32>,
+    /// 代理模式滚动上下文压缩后的目标窗口比例（0.1-0.95）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_rolling_context_target: Option<f64>,
 
     // ===== 主页面显示的应用 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -510,6 +547,9 @@ impl Default for AppSettings {
             first_run_notice_confirmed: None,
             common_config_confirmed: None,
             language: None,
+            proxy_rolling_context_enabled: None,
+            proxy_rolling_context_preserve_rounds: None,
+            proxy_rolling_context_target: None,
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,
@@ -837,6 +877,26 @@ pub fn unify_codex_migrate_existing_requested() -> bool {
 pub fn clear_codex_unify_migrate_existing() -> Result<(), AppError> {
     mutate_settings(|settings| {
         settings.unify_codex_migrate_existing = None;
+    })
+}
+
+/// Proxy rolling context 迁移是否已完成。
+pub fn is_proxy_rolling_context_migrated() -> bool {
+    get_settings()
+        .local_migrations
+        .as_ref()
+        .is_some_and(|migrations| migrations.proxy_rolling_context_v1.is_some())
+}
+
+/// 写入 proxy rolling context 迁移完成标记。
+pub fn mark_proxy_rolling_context_migrated(
+    migration: ProxyRollingContextMigration,
+) -> Result<(), AppError> {
+    mutate_settings(|settings| {
+        settings
+            .local_migrations
+            .get_or_insert_with(Default::default)
+            .proxy_rolling_context_v1 = Some(migration);
     })
 }
 

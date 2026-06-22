@@ -86,8 +86,13 @@ pub async fn apply(
     store: &MessageStore,
 ) -> Result<Option<RollingStats>, String> {
     // (1) Gate: feature enabled?
+    //     Global proxy switch takes precedence; legacy per-provider switch remains
+    //     as a fallback for backward compatibility.
+    let settings = crate::settings::get_settings();
+    let global_enabled = settings.proxy_rolling_context_enabled.unwrap_or(false);
+
     let meta = match provider.meta.as_ref() {
-        Some(m) if m.rolling_context_active() => m,
+        Some(m) if global_enabled || m.rolling_context_active() => m,
         _ => return Ok(None),
     };
 
@@ -122,12 +127,24 @@ pub async fn apply(
     );
 
     // (4) Build rolling config
+    //     Context window and threshold come from the provider's direct-mode settings
+    //     so auto-routing always respects the current supplier's limits.
+    //     Preserve rounds and target ratio are global user preferences.
     let context_window = meta.context_window_or_default();
+    let threshold = meta.native_auto_compact_pct() as f64 / 100.0;
+    let preserve_rounds = settings
+        .proxy_rolling_context_preserve_rounds
+        .unwrap_or(6)
+        .max(1);
+    let target_after = settings
+        .proxy_rolling_context_target
+        .unwrap_or(0.6)
+        .clamp(0.1, 0.95);
     let config = RollingConfig {
         context_window,
-        threshold: meta.rolling_threshold(),
-        preserve_rounds: meta.preserve_rounds(),
-        target_after: meta.rolling_target(),
+        threshold,
+        preserve_rounds,
+        target_after,
     };
 
     // (5a) Opportunistic cleanup of zombie sessions — best-effort, only runs
@@ -681,8 +698,8 @@ mod tests {
             meta: Some(ProviderMeta {
                 context_window: Some(context_window),
                 rolling_context_enabled: Some(enabled),
-                rolling_context_threshold: Some(0.8),
-                rolling_context_preserve_rounds: Some(2),
+                // Threshold now comes from native_auto_compact_pct / 100.
+                native_auto_compact_pct: Some(80),
                 ..Default::default()
             }),
             icon: None,
@@ -691,8 +708,20 @@ mod tests {
         }
     }
 
+    /// Initialize global rolling-context settings used by tests.
+    /// The production defaults are 6 rounds / 0.6 target; the legacy test suite
+    /// was written against 2 rounds / 0.6 target, so keep those for stability.
+    fn init_test_settings() {
+        let _guard = crate::settings::TEST_SETTINGS_LOCK.lock().unwrap();
+        let mut settings = crate::settings::get_settings();
+        settings.proxy_rolling_context_preserve_rounds = Some(2);
+        settings.proxy_rolling_context_target = Some(0.6);
+        crate::settings::update_settings(settings).unwrap();
+    }
+
     #[tokio::test]
     async fn disabled_returns_none() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(1000, false);
         let mut body = serde_json::json!({
@@ -707,6 +736,7 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_under_threshold_passes_through() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         // Pre-populate session with low cumulative usage
@@ -733,6 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_over_cumulative_threshold_truncates() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
                                                    // Pre-populate: cumulative = 9000 (over 8000)
@@ -798,6 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn compression_event_recorded() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
         store
@@ -833,6 +865,7 @@ mod tests {
 
     #[tokio::test]
     async fn cumulative_resets_after_compression() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         store
@@ -865,6 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_size_alone_triggers_compression() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000, target at 6000
         store
@@ -894,6 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_down_when_cumulative_stale() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000, target at 6000
         store
@@ -929,6 +964,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_trigger_with_low_cumulative_and_small_body() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         store
@@ -956,6 +992,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_meta_returns_none() {
+        init_test_settings();
         let store = in_memory_store();
         let mut provider = make_provider(1000, false);
         provider.meta = None;
@@ -968,6 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_messages_array_returns_none() {
+        init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(1000, true);
         let mut body = serde_json::json!({"messages": []});
