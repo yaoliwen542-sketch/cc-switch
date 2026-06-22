@@ -1,15 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
-
-#[cfg(test)]
-use std::sync::Mutex;
-
-#[cfg(test)]
-/// 全局锁，用于串行化所有修改 settings.json 的测试，避免并发测试互相覆盖。
-pub static TEST_SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -693,6 +685,7 @@ fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::fs::OpenOptions;
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
         let mut file = OpenOptions::new()
@@ -772,7 +765,7 @@ pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     Ok(())
 }
 
-fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
+pub(crate) fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
 where
     F: FnOnce(&mut AppSettings),
 {
@@ -886,18 +879,6 @@ pub fn is_proxy_rolling_context_migrated() -> bool {
         .local_migrations
         .as_ref()
         .is_some_and(|migrations| migrations.proxy_rolling_context_v1.is_some())
-}
-
-/// 写入 proxy rolling context 迁移完成标记。
-pub fn mark_proxy_rolling_context_migrated(
-    migration: ProxyRollingContextMigration,
-) -> Result<(), AppError> {
-    mutate_settings(|settings| {
-        settings
-            .local_migrations
-            .get_or_insert_with(Default::default)
-            .proxy_rolling_context_v1 = Some(migration);
-    })
 }
 
 /// 从文件重新加载设置到内存缓存

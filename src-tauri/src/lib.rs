@@ -563,6 +563,7 @@ pub fn run() {
 
             {
                 let db_for_codex_history_migration = app_state.db.clone();
+                let db_for_rc_migration = app_state.db.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(
                         &db_for_codex_history_migration,
@@ -622,7 +623,6 @@ pub fn run() {
                     }
 
                     // 把 per-provider 的 rolling context 开关/策略迁移到全局 proxy rolling context。
-                    let db_for_rc_migration = app_state.db.clone();
                     match crate::rolling_context_migration::maybe_migrate_provider_rolling_context_to_global(
                         &db_for_rc_migration,
                     ) {

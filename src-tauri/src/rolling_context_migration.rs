@@ -3,7 +3,6 @@
 //! 迁移只读 provider.meta，不写回 provider；老字段保留以保证向后兼容。
 
 use crate::database::Database;
-use crate::provider::ProviderMeta;
 use crate::settings::{
     is_proxy_rolling_context_migrated, mutate_settings, ProxyRollingContextMigration,
 };
@@ -112,6 +111,57 @@ mod tests {
     use crate::database::Database;
     use crate::provider::{Provider, ProviderMeta};
     use crate::settings::{get_settings, mutate_settings};
+    use serial_test::serial;
+    use std::env;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
 
     fn reset_migration_marker() {
         let _ = mutate_settings(|settings| {
@@ -152,8 +202,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn migration_is_idempotent() {
-        let _guard = crate::settings::TEST_SETTINGS_LOCK.lock().unwrap();
+        let _home = TempHome::new();
         reset_migration_marker();
         let db = Database::memory().unwrap();
         let outcome1 = maybe_migrate_provider_rolling_context_to_global(&db).unwrap();
@@ -163,8 +214,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn migration_enables_global_when_provider_enabled() {
-        let _guard = crate::settings::TEST_SETTINGS_LOCK.lock().unwrap();
+        let _home = TempHome::new();
         reset_migration_marker();
         let db = Database::memory().unwrap();
         let mut provider = make_provider(true, Some(8), Some(0.5));

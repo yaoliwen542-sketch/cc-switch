@@ -631,7 +631,58 @@ fn extract_content_text(msg: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::env;
     use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
 
     fn in_memory_store() -> MessageStore {
         let conn = rusqlite::Connection::open_in_memory().expect("open memory db");
@@ -711,17 +762,19 @@ mod tests {
     /// Initialize global rolling-context settings used by tests.
     /// The production defaults are 6 rounds / 0.6 target; the legacy test suite
     /// was written against 2 rounds / 0.6 target, so keep those for stability.
-    fn init_test_settings() {
-        let _guard = crate::settings::TEST_SETTINGS_LOCK.lock().unwrap();
+    fn init_test_settings() -> TempHome {
+        let home = TempHome::new();
         let mut settings = crate::settings::get_settings();
         settings.proxy_rolling_context_preserve_rounds = Some(2);
         settings.proxy_rolling_context_target = Some(0.6);
         crate::settings::update_settings(settings).unwrap();
+        home
     }
 
     #[tokio::test]
+    #[serial]
     async fn disabled_returns_none() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(1000, false);
         let mut body = serde_json::json!({
@@ -735,8 +788,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn enabled_under_threshold_passes_through() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         // Pre-populate session with low cumulative usage
@@ -762,8 +816,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn enabled_over_cumulative_threshold_truncates() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
                                                    // Pre-populate: cumulative = 9000 (over 8000)
@@ -828,8 +883,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn compression_event_recorded() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000
         store
@@ -864,8 +920,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn cumulative_resets_after_compression() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         store
@@ -897,8 +954,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn body_size_alone_triggers_compression() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000, target at 6000
         store
@@ -927,8 +985,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn sync_down_when_cumulative_stale() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true); // trigger at 8000, target at 6000
         store
@@ -963,8 +1022,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn no_trigger_with_low_cumulative_and_small_body() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(10000, true);
         store
@@ -991,8 +1051,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn no_meta_returns_none() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let mut provider = make_provider(1000, false);
         provider.meta = None;
@@ -1004,8 +1065,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn empty_messages_array_returns_none() {
-        init_test_settings();
+        let _home = init_test_settings();
         let store = in_memory_store();
         let provider = make_provider(1000, true);
         let mut body = serde_json::json!({"messages": []});
