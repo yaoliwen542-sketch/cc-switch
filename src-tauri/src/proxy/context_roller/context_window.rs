@@ -445,9 +445,10 @@ fn extract_message_content_snippet(msg: &Value, max_len: usize) -> Option<String
         return None;
     }
 
-    // Truncate to max_len and add ellipsis if needed
-    let truncated = if content.len() > max_len {
-        format!("{}...", &content[..max_len])
+    // Truncate to max_len *characters* and add ellipsis if needed.
+    // Using byte slicing `&content[..max_len]` panics on multi-byte UTF-8 chars.
+    let truncated = if content.chars().count() > max_len {
+        format!("{}...", content.chars().take(max_len).collect::<String>())
     } else {
         content
     };
@@ -744,5 +745,18 @@ mod tests {
                 .iter()
                 .any(|m| m["role"].as_str() == Some("assistant")));
         }
+    }
+
+    #[test]
+    fn snippet_truncates_multibyte_utf8_at_char_boundary() {
+        // Regression test: byte-index slicing panicked on multi-byte UTF-8 chars
+        // (e.g. Chinese text from weeyuen project docs).
+        let msg = serde_json::json!({"role": "user", "content": "`wy_frps` 表是本地表，不管国内桩还是外贸桩，都从这里取空闲 FRP 隧道。新增端口有两种方式。"});
+        let snippet = extract_message_content_snippet(&msg, 20).unwrap();
+        // Should truncate to 20 chars (not bytes) and end with "..."
+        assert!(snippet.ends_with("..."));
+        assert_eq!(snippet.chars().count(), 23); // 20 chars + 3 ellipsis
+        // Must be valid UTF-8
+        assert!(snippet.chars().next().is_some());
     }
 }
