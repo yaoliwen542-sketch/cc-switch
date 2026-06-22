@@ -97,25 +97,26 @@ pub(crate) fn inject_native_auto_compact(
 
 /// Decide whether to inject native auto-compact into the live config.
 ///
-/// Returns true when:
-/// - rolling-context is **not** enabled on this provider (so our proxy won't
-///   intercept), AND
-/// - the provider has a `context_window` configured
-///
-/// In that case we fall back to Claude Code's own auto-compact, which
-/// prevents deadlocks when users run claude-code directly against the
-/// upstream API (bypassing the proxy).
+/// Native auto-compact is the fallback path used when cc-switch's proxy rolling
+/// context is disabled. As long as the global proxy switch is OFF and the
+/// provider has configured a context window, we automatically inject
+/// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` so
+/// Claude Code triggers its own /compact before hitting the upstream ceiling.
+/// When the global proxy switch is ON, the proxy handles compaction and we skip
+/// injection to avoid double-compaction.
 pub(crate) fn should_inject_native_auto_compact(
     meta: Option<&crate::provider::ProviderMeta>,
 ) -> bool {
+    let global_proxy_enabled = crate::settings::get_settings()
+        .proxy_rolling_context_enabled
+        .unwrap_or(false);
+
     match meta {
-        // If rolling-context proxy is active, proxy handles compaction
-        Some(m) if m.rolling_context_active() => false,
-        // Otherwise: only inject if user explicitly enabled native auto-compact
-        // for this provider (via the ProviderForm UI). We do NOT auto-enable
-        // for every provider with context_window, because some users don't
-        // want Claude Code's auto-compact interfering with their workflow.
-        Some(m) if m.native_auto_compact_enabled.unwrap_or(false) => true,
+        // If proxy rolling context is globally enabled, proxy handles compaction.
+        _ if global_proxy_enabled => false,
+        // Otherwise auto-enable native auto-compact whenever the provider has
+        // configured a context window (and optionally a threshold percentage).
+        Some(m) if m.context_window.is_some() => true,
         _ => false,
     }
 }
@@ -125,6 +126,63 @@ mod native_auto_compact_tests {
     use super::*;
     use crate::provider::ProviderMeta;
     use serde_json::json;
+    use serial_test::serial;
+    use std::env;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    fn set_proxy_rolling_context_enabled(enabled: bool) {
+        let mut settings = crate::settings::get_settings();
+        settings.proxy_rolling_context_enabled = Some(enabled);
+        crate::settings::update_settings(settings).unwrap();
+    }
 
     #[test]
     fn injects_env_vars_when_meta_has_context_window() {
@@ -176,37 +234,41 @@ mod native_auto_compact_tests {
     }
 
     #[test]
+    #[serial]
     fn should_inject_logic() {
+        let _home = TempHome::new();
+
+        // Global proxy OFF by default.
         // No meta → don't inject
         assert!(!should_inject_native_auto_compact(None));
-        // Meta with no flags → don't inject (must explicitly enable)
+        // Meta with no context_window → don't inject
         let m = ProviderMeta::default();
         assert!(!should_inject_native_auto_compact(Some(&m)));
-        // Meta with context_window but no native flag → don't inject
+        // Meta with context_window → auto inject (no toggle needed)
         let m = ProviderMeta {
             context_window: Some(100_000),
-            ..Default::default()
-        };
-        assert!(!should_inject_native_auto_compact(Some(&m)));
-        // Meta with native auto-compact ON → inject
-        let m = ProviderMeta {
-            context_window: Some(100_000),
-            native_auto_compact_enabled: Some(true),
             ..Default::default()
         };
         assert!(should_inject_native_auto_compact(Some(&m)));
-        // Meta with rolling ON → don't inject (proxy handles it)
+        // Meta with context_window and threshold → inject
         let m = ProviderMeta {
             context_window: Some(100_000),
-            rolling_context_enabled: Some(true),
+            native_auto_compact_pct: Some(75),
+            ..Default::default()
+        };
+        assert!(should_inject_native_auto_compact(Some(&m)));
+
+        // Global proxy ON: proxy handles compaction, don't inject
+        set_proxy_rolling_context_enabled(true);
+        let m = ProviderMeta {
+            context_window: Some(100_000),
             ..Default::default()
         };
         assert!(!should_inject_native_auto_compact(Some(&m)));
-        // Meta with both ON → rolling wins, don't inject
+        // Legacy per-provider rolling_context_enabled is ignored; global wins
         let m = ProviderMeta {
             context_window: Some(100_000),
             rolling_context_enabled: Some(true),
-            native_auto_compact_enabled: Some(true),
             ..Default::default()
         };
         assert!(!should_inject_native_auto_compact(Some(&m)));
@@ -929,12 +991,9 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             // safety net for direct-to-upstream mode (bypassing the proxy).
             if should_inject_native_auto_compact(provider.meta.as_ref()) {
                 let meta = provider.meta.as_ref().unwrap();
-                // Prefer the dedicated native_auto_compact_window, fall back
-                // to context_window. The dedicated field is what the user
-                // explicitly sets in the provider form.
-                let window = meta.native_auto_compact_window.or(meta.context_window);
-                // Default 60% if not specified (matches the original
-                // 81%-deadlock fix).
+                // Proxy is OFF: reuse the provider's context window and
+                // compression trigger percentage for native auto-compact.
+                let window = meta.context_window;
                 let pct = meta.native_auto_compact_pct.unwrap_or(60);
                 settings = inject_native_auto_compact(&settings, window, Some(pct as f64));
                 log::info!(

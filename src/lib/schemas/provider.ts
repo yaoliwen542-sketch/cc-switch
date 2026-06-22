@@ -55,17 +55,10 @@ export const providerSchema = z.object({
   // 图标配置
   icon: z.string().optional(),
   iconColor: z.string().optional(),
-  // 滚动上下文配置
+  // 上下文管理：一个上下文窗口 + 一个压缩触发百分比，
+  // 代理模式和直连模式共用同一组值。
   contextWindow: z.number().optional(),
-  rollingContextEnabled: z.boolean().optional(),
-  rollingContextThreshold: z.number().min(0.1).max(0.99).optional(),
-  rollingContextPreserveRounds: z.number().min(1).optional(),
-  rollingContextTarget: z.number().min(0.1).max(0.95).optional(),
-  // 原生 auto-compact fallback 配置（路由关闭时用）
-  // 写入 settingsConfig 的 env 中，写到 ~/.claude/settings.json
-  nativeAutoCompactEnabled: z.boolean().optional(),
   nativeAutoCompactPct: z.number().min(10).max(99).optional(),
-  nativeAutoCompactWindow: z.number().optional(),
 });
 
 export type ProviderFormData = z.infer<typeof providerSchema>;

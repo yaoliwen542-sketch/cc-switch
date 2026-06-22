@@ -380,9 +380,7 @@ function ProviderFormFull({
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
       contextWindow: initialData?.meta?.contextWindow,
-      nativeAutoCompactEnabled: initialData?.meta?.nativeAutoCompactEnabled ?? false,
       nativeAutoCompactPct: initialData?.meta?.nativeAutoCompactPct,
-      nativeAutoCompactWindow: initialData?.meta?.nativeAutoCompactWindow,
     }),
     [initialData, appId],
   );
@@ -1426,9 +1424,7 @@ function ProviderFormFull({
           ? true
           : undefined,
       contextWindow: values.contextWindow,
-      nativeAutoCompactEnabled: values.nativeAutoCompactEnabled,
       nativeAutoCompactPct: values.nativeAutoCompactPct,
-      nativeAutoCompactWindow: values.nativeAutoCompactWindow,
     };
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {

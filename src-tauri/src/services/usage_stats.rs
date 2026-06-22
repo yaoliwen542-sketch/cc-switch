@@ -1587,6 +1587,67 @@ impl Database {
         }
     }
 
+    /// 返回使用统计诊断信息，用于排查面板为空的问题。
+    pub fn get_usage_stats_diagnostics(
+        &self,
+    ) -> Result<serde_json::Value, AppError> {
+        let conn = lock_conn!(self.conn);
+
+        let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        let mut columns_stmt = conn.prepare("PRAGMA table_info(proxy_request_logs)")?;
+        let columns = columns_stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "name": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "notNull": row.get::<_, i32>(3)? == 1,
+                "defaultValue": row.get::<_, Option<String>>(4)?,
+            }))
+        })?;
+        let column_list: Vec<serde_json::Value> = columns.collect::<Result<_, _>>()?;
+
+        let total_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs",
+            [],
+            |row| row.get(0),
+        )?;
+        let today_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE created_at >= strftime('%s', 'now', 'start of day')",
+            [],
+            |row| row.get(0),
+        )?;
+        let recent_row: Option<serde_json::Value> = conn
+            .query_row(
+                "SELECT request_id, app_type, provider_id, model, status_code, created_at, data_source, pricing_model
+                 FROM proxy_request_logs
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok(serde_json::json!({
+                        "requestId": row.get::<_, String>(0)?,
+                        "appType": row.get::<_, String>(1)?,
+                        "providerId": row.get::<_, String>(2)?,
+                        "model": row.get::<_, String>(3)?,
+                        "statusCode": row.get::<_, i32>(4)?,
+                        "createdAt": row.get::<_, i64>(5)?,
+                        "dataSource": row.get::<_, Option<String>>(6)?,
+                        "pricingModel": row.get::<_, Option<String>>(7)?,
+                    }))
+                },
+            )
+            .ok();
+
+        Ok(serde_json::json!({
+            "userVersion": user_version,
+            "expectedVersion": crate::database::SCHEMA_VERSION,
+            "columns": column_list,
+            "totalRows": total_rows,
+            "todayRows": today_rows,
+            "mostRecentRow": recent_row,
+        }))
+    }
+
     /// 检查 Provider 使用限额
     pub fn check_provider_limits(
         &self,

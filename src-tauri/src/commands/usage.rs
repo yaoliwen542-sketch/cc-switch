@@ -331,6 +331,13 @@ pub fn get_usage_data_sources(
     crate::services::session_usage::get_data_source_breakdown(&state.db)
 }
 
+/// 使用统计诊断：返回数据库版本、proxy_request_logs 列信息、行数等，
+/// 用于排查“使用统计面板全部为空”的问题。
+#[tauri::command]
+pub fn get_usage_stats_diagnostics(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    state.db.get_usage_stats_diagnostics()
+}
+
 /// 模型定价信息
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

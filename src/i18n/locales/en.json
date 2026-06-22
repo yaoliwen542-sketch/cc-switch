@@ -177,25 +177,10 @@
       "rollingContext": {
         "title": "Context Management",
         "overviewHint": "Each provider only needs a context window and compact trigger percentage; the proxy-mode global switch is in Settings → Proxy.",
-        "proxySectionTitle": "Context Window",
-        "enabled": "Enable rolling context (proxy mode)",
-        "enabledHint": "cc-switch automatically compresses older history at the proxy layer, preserving the system prompt and the last N full rounds. Requires the proxy service to be running.",
         "contextWindowLabel": "Context Window",
         "contextWindowHint": "This provider's context window size in tokens. Used by both proxy and direct modes.",
-        "threshold": "Compression Threshold",
-        "thresholdHint": "Context window ratio that triggers auto-compression (0.1–0.99). Default: 0.8",
-        "preserveRounds": "Preserve Recent Rounds",
-        "preserveRoundsHint": "Number of recent user/assistant exchanges to keep in full (system prompt is always preserved). Default: 6",
-        "target": "Target After Compression",
-        "targetHint": "Target context window ratio after compression (0.1-0.95). Lower = more aggressive compression. Default: 0.6",
-        "nativeSectionTitle": "Auto-compact",
-        "nativeEnabled": "Enable Claude Code native auto-compact",
-        "nativeEnabledHint": "When the router is off, Claude Code's own /compact fires earlier (default 60% instead of 95%) to prevent deadlocks with upstream providers.",
-        "nativeConfigHint": "Claude Code reads these env vars from this provider's settings.json to decide when to compact. The percentage is also reused as the proxy-mode compression threshold.",
-        "nativePct": "Compact trigger percentage",
-        "nativePctHint": "Percentage of context window to trigger /compact (10-99). Default: 60. Lower = compact earlier = safer. When proxy rolling context is enabled, this value is reused as the compression threshold.",
-        "nativeWindow": "Context window (tokens)",
-        "nativeWindowHint": "The context window Claude Code uses as denominator. If empty, uses the context window value above."
+        "compactPctLabel": "Compact trigger percentage",
+        "compactPctHint": "Percentage of context window to trigger /compact (10-99). Default: 60. Lower = compact earlier = safer. When proxy mode is off, Claude Code native auto-compact reuses this value."
       }
     }
   },

@@ -177,25 +177,10 @@
       "rollingContext": {
         "title": "上下文管理",
         "overviewHint": "每个供应商只需配置上下文窗口和压缩触发百分比；代理模式的全局开关在“设置 → 代理”中。",
-        "proxySectionTitle": "上下文窗口",
-        "enabled": "启用滚动上下文（代理模式）",
-        "enabledHint": "cc-switch 在代理层自动压缩较早的历史消息（保留系统提示和最近 N 轮完整对话）。需要代理服务已启动。",
         "contextWindowLabel": "上下文窗口",
         "contextWindowHint": "当前供应商的上下文窗口大小（token 数）。代理模式和直连模式都会使用此值。",
-        "threshold": "压缩阈值",
-        "thresholdHint": "触发自动压缩的上下文窗口比例（0.1-0.99）。默认：0.8",
-        "preserveRounds": "保留最近轮数",
-        "preserveRoundsHint": "保留完整的最近用户/助手对话轮数（系统提示始终保留）。默认：6",
-        "target": "压缩后目标比例",
-        "targetHint": "压缩后目标上下文窗口比例（0.1-0.95）。越低 = 压缩越激进。默认：0.6",
-        "nativeSectionTitle": "自动压缩",
-        "nativeEnabled": "启用 Claude Code 原生自动压缩",
-        "nativeEnabledHint": "路由关闭时，Claude Code 的 /compact 提前触发（默认 60% 而非 95%），防止上游供应商死锁。",
-        "nativeConfigHint": "Claude Code 从该供应商的 settings.json 读取这些环境变量来决定何时压缩。代理模式下，该百分比也会作为压缩阈值复用。",
-        "nativePct": "压缩触发百分比",
-        "nativePctHint": "上下文窗口的百分比触发 /compact（10-99）。默认：60。越低 = 越早压缩 = 越安全。代理模式开启时，该值也会作为压缩阈值。",
-        "nativeWindow": "上下文窗口（token 数）",
-        "nativeWindowHint": "Claude Code 用作分母的上下文窗口。如留空，则使用上方的上下文窗口值。"
+        "compactPctLabel": "压缩触发百分比",
+        "compactPctHint": "上下文窗口的百分比触发 /compact（10-99）。默认：60。越低 = 越早压缩 = 越安全。未开启代理模式时，Claude Code 原生自动压缩会复用此值。"
       }
     }
   },
