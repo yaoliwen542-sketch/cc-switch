@@ -78,12 +78,19 @@ pub struct RollingStats {
 /// 4. Records the compression event
 /// 5. Sets cumulative tokens to the post-compression estimate
 ///
+/// `effective_context_window` and `effective_target_after` let the forwarder
+/// supply route-level conservative values (e.g. the smallest provider's window
+/// and its compact trigger percentage). When `None`, the current provider's own
+/// values are used as a fallback.
+///
 /// Returns `Ok(None)` if rolling-context is disabled or no work was done.
 pub async fn apply(
     body: &mut Value,
     session_id: &str,
     provider: &Provider,
     store: &MessageStore,
+    effective_context_window: Option<u64>,
+    effective_target_after: Option<f64>,
 ) -> Result<Option<RollingStats>, String> {
     // (1) Gate: feature enabled?
     //     Global proxy switch takes precedence; legacy per-provider switch remains
@@ -127,19 +134,18 @@ pub async fn apply(
     );
 
     // (4) Build rolling config
-    //     Context window and threshold come from the provider's direct-mode settings
-    //     so auto-routing always respects the current supplier's limits.
-    //     Preserve rounds and target ratio are global user preferences.
-    let context_window = meta.context_window_or_default();
-    let threshold = meta.native_auto_compact_pct() as f64 / 100.0;
-    let preserve_rounds = settings
-        .proxy_rolling_context_preserve_rounds
-        .unwrap_or(6)
-        .max(1);
-    let target_after = settings
-        .proxy_rolling_context_target
-        .unwrap_or(0.6)
+    //     Context window and compression target are taken from the provider by
+    //     default. When the forwarder supplies route-level values (proxy-mode
+    //     global rolling context), we use the smallest provider's window and
+    //     reuse its compact trigger percentage as both threshold and target.
+    //     The number of recent rounds to preserve is a built-in algorithm
+    //     constant and is not exposed in the UI.
+    let context_window = effective_context_window.unwrap_or_else(|| meta.context_window_or_default());
+    let target_after = effective_target_after
+        .unwrap_or_else(|| meta.native_auto_compact_pct() as f64 / 100.0)
         .clamp(0.1, 0.95);
+    let threshold = target_after;
+    let preserve_rounds = 6u32;
     let config = RollingConfig {
         context_window,
         threshold,
@@ -760,8 +766,10 @@ mod tests {
     }
 
     /// Initialize global rolling-context settings used by tests.
-    /// The production defaults are 6 rounds / 0.6 target; the legacy test suite
-    /// was written against 2 rounds / 0.6 target, so keep those for stability.
+    /// The built-in algorithm now uses 6 preserved rounds and reuses the
+    /// provider's compact trigger percentage as the target ratio, so these
+    /// legacy global settings are kept only to avoid interfering with other
+    /// tests that may still read them.
     fn init_test_settings() -> TempHome {
         let home = TempHome::new();
         let mut settings = crate::settings::get_settings();
@@ -783,7 +791,7 @@ mod tests {
                 {"role": "user", "content": "hello"},
             ]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store, None, None).await.unwrap();
         assert!(stats.is_none());
     }
 
@@ -808,7 +816,7 @@ mod tests {
                 {"role": "assistant", "content": "Hi there!"},
             ]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store, None, None).await.unwrap();
         assert!(stats.is_some());
         let s = stats.unwrap();
         assert!(!s.was_truncated);
@@ -840,7 +848,7 @@ mod tests {
             "model": "gpt-4",
             "messages": msgs
         });
-        let stats = apply(&mut body, "sess-2", &provider, &store)
+        let stats = apply(&mut body, "sess-2", &provider, &store, None, None)
             .await
             .unwrap()
             .unwrap();
@@ -893,10 +901,12 @@ mod tests {
             .unwrap();
         // Cumulative > trigger; need body large enough to actually have to drop
         store
-            .record_response_usage("sess-3", 9000, 0, 0, 0)
+            .record_response_usage("sess-3", 12000, 0, 0, 0)
             .unwrap();
         // Many rounds + large content so target (60% of 10K = 6K) is exceeded
-        // by preserved alone, forcing non-preserved to be dropped.
+        // by preserved alone, forcing non-preserved to be dropped. We pass an
+        // explicit target here to keep the test stable regardless of the
+        // provider's default compact trigger percentage.
         let mut msgs = vec![serde_json::json!({"role": "system", "content": "sys"})];
         for i in 0..20 {
             msgs.push(serde_json::json!({
@@ -905,7 +915,7 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        let stats = apply(&mut body, "sess-3", &provider, &store)
+        let stats = apply(&mut body, "sess-3", &provider, &store, None, Some(0.6))
             .await
             .unwrap()
             .unwrap();
@@ -929,7 +939,7 @@ mod tests {
             .get_or_create_session("sess-4", "test-prov", None, Some(10000))
             .unwrap();
         store
-            .record_response_usage("sess-4", 9000, 0, 0, 0)
+            .record_response_usage("sess-4", 12000, 0, 0, 0)
             .unwrap();
         let mut msgs = vec![serde_json::json!({"role": "system", "content": "sys"})];
         for i in 0..20 {
@@ -939,7 +949,7 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        let stats = apply(&mut body, "sess-4", &provider, &store)
+        let stats = apply(&mut body, "sess-4", &provider, &store, None, Some(0.6))
             .await
             .unwrap()
             .unwrap();
@@ -974,7 +984,7 @@ mod tests {
             }));
         }
         let mut body = serde_json::json!({"messages": msgs});
-        let stats = apply(&mut body, "sess-body", &provider, &store)
+        let stats = apply(&mut body, "sess-body", &provider, &store, None, None)
             .await
             .unwrap()
             .unwrap();
@@ -1005,7 +1015,7 @@ mod tests {
                 {"role": "assistant", "content": "Hi there!"},
             ]
         });
-        let stats = apply(&mut body, "sess-sync", &provider, &store)
+        let stats = apply(&mut body, "sess-sync", &provider, &store, None, None)
             .await
             .unwrap()
             .unwrap();
@@ -1041,7 +1051,7 @@ mod tests {
                 {"role": "assistant", "content": "Hi there!"},
             ]
         });
-        let stats = apply(&mut body, "sess-low", &provider, &store)
+        let stats = apply(&mut body, "sess-low", &provider, &store, None, None)
             .await
             .unwrap()
             .unwrap();
@@ -1060,7 +1070,7 @@ mod tests {
         let mut body = serde_json::json!({
             "messages": [{"role": "user", "content": "hello"}]
         });
-        let stats = apply(&mut body, "sess-1", &provider, &store).await.unwrap();
+        let stats = apply(&mut body, "sess-1", &provider, &store, None, None).await.unwrap();
         assert!(stats.is_none());
     }
 
@@ -1071,7 +1081,7 @@ mod tests {
         let store = in_memory_store();
         let provider = make_provider(1000, true);
         let mut body = serde_json::json!({"messages": []});
-        let stats = apply(&mut body, "sess-empty", &provider, &store)
+        let stats = apply(&mut body, "sess-empty", &provider, &store, None, None)
             .await
             .unwrap();
         assert!(stats.is_none());

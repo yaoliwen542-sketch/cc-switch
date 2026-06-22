@@ -374,7 +374,7 @@
         "description": "Automatically compress history in proxy mode to avoid exceeding provider context windows",
         "enableProxy": "Enable proxy-mode rolling context",
         "enableProxyDescription": "When enabled, all requests routed through cc-switch are automatically compressed based on the current provider's context window and compact percentage.",
-        "defaultsHint": "Preserve recent rounds (default 6) and target after compression (default 60%) use built-in defaults."
+        "defaultsHint": "The target compression ratio is automatically derived from the provider with the smallest context window in the current proxy route and its compact trigger percentage; no manual configuration needed."
       },
       "data": {
         "title": "Data Management",

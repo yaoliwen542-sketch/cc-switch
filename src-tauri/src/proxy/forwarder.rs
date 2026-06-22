@@ -1386,13 +1386,49 @@ impl RequestForwarder {
 
         // Apply rolling context if enabled for this provider
         let mut request_body = if let Some(meta) = provider.meta.as_ref() {
-            if meta.rolling_context_active() {
+            let global_rolling_enabled = crate::settings::get_settings()
+                .proxy_rolling_context_enabled
+                .unwrap_or(false);
+            if global_rolling_enabled || meta.rolling_context_active() {
+                // Proxy-mode global rolling context uses the most constrained
+                // provider in the route (smallest context window) and reuses
+                // its compact trigger percentage as both threshold and target.
+                // Per-provider legacy mode falls back to the current provider.
+                let (effective_cw, effective_target) = if global_rolling_enabled {
+                    match self.router.select_providers(app_type.as_str()).await {
+                        Ok(providers) => providers
+                            .iter()
+                            .filter_map(|p| {
+                                p.meta.as_ref().map(|m| {
+                                    (
+                                        m.context_window_or_default(),
+                                        (m.native_auto_compact_pct() as f64 / 100.0)
+                                            .clamp(0.1, 0.95),
+                                    )
+                                })
+                            })
+                            .min_by_key(|(cw, _)| *cw)
+                            .map(|(cw, target)| (Some(cw), Some(target)))
+                            .unwrap_or((None, None)),
+                        Err(e) => {
+                            log::warn!(
+                                "[RollingContext] failed to select providers for route config: {e}"
+                            );
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+
                 let mut body = request_body;
                 match super::context_roller::apply(
                     &mut body,
                     &self.session_id,
                     provider,
                     &self.message_store,
+                    effective_cw,
+                    effective_target,
                 )
                 .await
                 {
