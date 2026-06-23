@@ -1199,6 +1199,18 @@ impl RequestForwarder {
                 super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
         }
 
+        // --- Universal orphan tool result sanitizer (runs for every provider) ---
+        // Drops or converts tool messages that reference a tool_call_id /
+        // tool_use_id not present in the IMMEDIATELY preceding assistant turn.
+        // This catches malformed client bodies that would otherwise be
+        // rejected by every upstream API with:
+        //   - "tool result's tool id(...) not found (2013)"
+        //   - "tool_call_id is not found"
+        //   - "an assistant message with 'tool_calls' must be followed by tool messages..."
+        // Must run BEFORE rolling-context compression so a malformed body is
+        // also cleaned on the compressed copy.
+        mapped_body = super::copilot_optimizer::sanitize_orphan_tool_results(mapped_body);
+
         // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
         // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
         //

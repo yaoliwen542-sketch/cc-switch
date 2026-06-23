@@ -383,49 +383,93 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
     // Anthropic 协议要求 tool_result 紧跟其对应 tool_use 所在的 assistant turn。
     // 只检查 messages[i-1]（紧邻上一条 assistant）来判定是否 orphan，
     // 与参考实现 sanitizeOrphanToolResults 对齐。
+    //
+    // 同时处理 OpenAI 格式：role="tool" + tool_call_id 必须是
+    // 紧邻上一条 assistant 的 tool_calls[].id，否则孤儿。
     for i in 1..messages.len() {
-        if messages[i].get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
+        let role = messages[i].get("role").and_then(|r| r.as_str());
 
-        // 收集紧邻上一条 assistant 的 tool_use id
-        let prev_tool_use_ids: HashSet<String> =
-            if messages[i - 1].get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                messages[i - 1]
-                    .get("content")
-                    .and_then(|c| c.as_array())
-                    .map(|blocks| {
-                        blocks
+        if role == Some("user") {
+            // Anthropic 协议
+            let prev_tool_use_ids: HashSet<String> =
+                if messages[i - 1].get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                    messages[i - 1]
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                                .filter_map(|b| b.get("id").and_then(|i| i.as_str()).map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    // 上一条不是 assistant → 这条 user 中的所有 tool_result 都是 orphan
+                    HashSet::new()
+                };
+
+            let content = match messages[i]
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+            {
+                Some(blocks) => blocks,
+                None => continue,
+            };
+
+            for block in content.iter_mut() {
+                if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                    continue;
+                }
+                let tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or("");
+                // 空 tool_use_id 或不在紧邻 assistant 的 tool_use 中 → orphan
+                if tool_use_id.is_empty() || !prev_tool_use_ids.contains(tool_use_id) {
+                    let content_text = match block.get("content") {
+                        Some(Value::String(text)) => text.clone(),
+                        Some(Value::Array(blocks)) => blocks
                             .iter()
-                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
-                            .filter_map(|b| b.get("id").and_then(|i| i.as_str()).map(String::from))
+                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        _ => String::new(),
+                    };
+                    *block = serde_json::json!({
+                        "type": "text",
+                        "text": format!("[Tool result for {}]: {}", tool_use_id, content_text)
+                    });
+                }
+            }
+        } else if role == Some("tool") {
+            // OpenAI 协议：role=tool 的 message 顶层有 tool_call_id
+            // 必须是紧邻上一条 assistant 的 tool_calls[].id
+            let tool_call_id = messages[i]
+                .get("tool_call_id")
+                .and_then(|id| id.as_str())
+                .unwrap_or("");
+            let prev_tool_call_ids: HashSet<String> = if messages[i - 1]
+                .get("role")
+                .and_then(|r| r.as_str())
+                == Some("assistant")
+            {
+                messages[i - 1]
+                    .get("tool_calls")
+                    .and_then(|tc| tc.as_array())
+                    .map(|tcs| {
+                        tcs.iter()
+                            .filter_map(|tc| tc.get("id").and_then(|id| id.as_str()).map(String::from))
                             .collect()
                     })
                     .unwrap_or_default()
             } else {
-                // 上一条不是 assistant → 这条 user 中的所有 tool_result 都是 orphan
                 HashSet::new()
             };
 
-        let content = match messages[i]
-            .get_mut("content")
-            .and_then(|c| c.as_array_mut())
-        {
-            Some(blocks) => blocks,
-            None => continue,
-        };
-
-        for block in content.iter_mut() {
-            if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
-                continue;
-            }
-            let tool_use_id = block
-                .get("tool_use_id")
-                .and_then(|id| id.as_str())
-                .unwrap_or("");
-            // 空 tool_use_id 或不在紧邻 assistant 的 tool_use 中 → orphan
-            if tool_use_id.is_empty() || !prev_tool_use_ids.contains(tool_use_id) {
-                let content_text = match block.get("content") {
+            if tool_call_id.is_empty() || !prev_tool_call_ids.contains(tool_call_id) {
+                // 转为 user + text，让上游 API 接受
+                let content_text = match messages[i].get("content") {
                     Some(Value::String(text)) => text.clone(),
                     Some(Value::Array(blocks)) => blocks
                         .iter()
@@ -434,9 +478,9 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
                         .join("\n"),
                     _ => String::new(),
                 };
-                *block = serde_json::json!({
-                    "type": "text",
-                    "text": format!("[Tool result for {}]: {}", tool_use_id, content_text)
+                messages[i] = serde_json::json!({
+                    "role": "user",
+                    "content": format!("[Tool result for {}]: {}", tool_call_id, content_text)
                 });
             }
         }
@@ -1401,6 +1445,64 @@ mod tests {
         let content = result["messages"][1]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "text");
+    }
+
+    // === OpenAI 格式 orphan tool 清洗测试 ===
+
+    #[test]
+    fn test_sanitize_openai_orphan_tool_with_empty_id() {
+        // OpenAI 格式：role="tool", tool_call_id 字段缺失。
+        // 应该是 orphan（empty id 不能匹配任何 assistant tool_call）。
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_abc", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "content": "orphan content"}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        let m = &result["messages"][2];
+        assert_eq!(m["role"], "user");
+        let text = m["content"].as_str().unwrap();
+        assert!(text.contains("orphan content"));
+    }
+
+    #[test]
+    fn test_sanitize_openai_orphan_tool_id_not_in_preceding_assistant() {
+        // tool_call_id 引用了一个不存在的 call id
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_real", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_fake", "content": "fake"}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        let m = &result["messages"][2];
+        assert_eq!(m["role"], "user");
+        assert!(m["content"].as_str().unwrap().contains("fake"));
+    }
+
+    #[test]
+    fn test_sanitize_openai_valid_tool_pair_kept() {
+        // 正常的 tool 配对应该保持
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_xyz", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_xyz", "content": "ok"}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        let m = &result["messages"][2];
+        assert_eq!(m["role"], "tool");
+        assert_eq!(m["tool_call_id"], "call_xyz");
     }
 
     // === strip_thinking_blocks 测试 ===

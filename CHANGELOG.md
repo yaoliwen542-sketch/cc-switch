@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.17] - 2026-06-23
+
+### Fixed
+
+- **Universal Orphan Tool-Result Sanitizer**: Extended `sanitize_orphan_tool_results` to also handle OpenAI-format bodies (`role: "tool"` + `tool_call_id`) and now runs it for every provider on every request (previously it was Copilot-only). This catches malformed client bodies before they reach the upstream API, fixing repeated `API Error: 400 tool_call_id is not found` errors regardless of whether the provider is Copilot, OpenAI, Anthropic, or anything else.
+
 ## [3.17.16] - 2026-06-23
 
 ### Fixed
