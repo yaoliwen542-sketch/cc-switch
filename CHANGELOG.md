@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.19] - 2026-06-23
+
+### Fixed
+
+- **Parallel OpenAI Tool-Result Handling in Sanitizer**: The orphan tool-result sanitizer now correctly handles OpenAI parallel tool calls where a single assistant makes multiple `tool_calls` followed by multiple consecutive `role: "tool"` messages.  Pass 1 walks back through preceding `role: "tool"` messages to find the originating assistant's `tool_calls` (rather than only checking the immediately preceding message).  Pass 2 collects every consecutive `role: "tool"` response id when validating an assistant.  Pass 3 drops assistant messages that lost all their `tool_calls` / `tool_use` content but have no text content to keep.
+
 ## [3.17.18] - 2026-06-23
 
 ### Fixed
