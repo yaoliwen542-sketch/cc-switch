@@ -375,22 +375,32 @@ fn detect_subagent(body: &Value) -> bool {
 ///
 /// 与 copilot-api 的 `sanitizeOrphanToolResults` 对齐。
 pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
+    // Pass 1: tool result / tool messages referencing an id not in the
+    // immediately preceding assistant turn → convert to user+text.
+    sanitize_orphan_tool_results_pass1(&mut body);
+
+    // Pass 2: assistant messages whose tool_calls are not all followed by a
+    // matching tool result → strip the missing tool_call entries.
+    sanitize_orphan_tool_results_pass2(&mut body);
+
+    body
+}
+
+/// Pass 1: a `role: "user"` Anthropic `tool_result` block, or an OpenAI
+/// `role: "tool"` message, whose `tool_use_id` / `tool_call_id` is missing,
+/// empty, or not in the immediately preceding assistant turn.  Convert to
+/// a plain `user` text message so upstream APIs accept it.
+fn sanitize_orphan_tool_results_pass1(body: &mut Value) {
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(msgs) if msgs.len() >= 2 => msgs,
-        _ => return body,
+        _ => return,
     };
 
-    // Anthropic 协议要求 tool_result 紧跟其对应 tool_use 所在的 assistant turn。
-    // 只检查 messages[i-1]（紧邻上一条 assistant）来判定是否 orphan，
-    // 与参考实现 sanitizeOrphanToolResults 对齐。
-    //
-    // 同时处理 OpenAI 格式：role="tool" + tool_call_id 必须是
-    // 紧邻上一条 assistant 的 tool_calls[].id，否则孤儿。
     for i in 1..messages.len() {
         let role = messages[i].get("role").and_then(|r| r.as_str());
 
         if role == Some("user") {
-            // Anthropic 协议
+            // Anthropic protocol
             let prev_tool_use_ids: HashSet<String> =
                 if messages[i - 1].get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     messages[i - 1]
@@ -405,7 +415,6 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
                         })
                         .unwrap_or_default()
                 } else {
-                    // 上一条不是 assistant → 这条 user 中的所有 tool_result 都是 orphan
                     HashSet::new()
                 };
 
@@ -425,7 +434,6 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
                     .get("tool_use_id")
                     .and_then(|id| id.as_str())
                     .unwrap_or("");
-                // 空 tool_use_id 或不在紧邻 assistant 的 tool_use 中 → orphan
                 if tool_use_id.is_empty() || !prev_tool_use_ids.contains(tool_use_id) {
                     let content_text = match block.get("content") {
                         Some(Value::String(text)) => text.clone(),
@@ -443,8 +451,7 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
                 }
             }
         } else if role == Some("tool") {
-            // OpenAI 协议：role=tool 的 message 顶层有 tool_call_id
-            // 必须是紧邻上一条 assistant 的 tool_calls[].id
+            // OpenAI protocol
             let tool_call_id = messages[i]
                 .get("tool_call_id")
                 .and_then(|id| id.as_str())
@@ -468,7 +475,6 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
             };
 
             if tool_call_id.is_empty() || !prev_tool_call_ids.contains(tool_call_id) {
-                // 转为 user + text，让上游 API 接受
                 let content_text = match messages[i].get("content") {
                     Some(Value::String(text)) => text.clone(),
                     Some(Value::Array(blocks)) => blocks
@@ -485,8 +491,124 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
             }
         }
     }
+}
 
-    body
+/// Pass 2: forward check.  Walk every assistant message; for each tool_call
+/// (OpenAI) or `tool_use` block (Anthropic), verify the next message contains
+/// a matching tool result.  If not, strip that entry.  This handles the
+/// "an assistant message with 'tool_calls' must be followed by tool messages
+/// responding to each 'tool_call_id'" error.
+fn sanitize_orphan_tool_results_pass2(body: &mut Value) {
+    let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        Some(msgs) if !msgs.is_empty() => msgs,
+        _ => return,
+    };
+
+    for i in 0..messages.len() {
+        if messages[i].get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+
+        // Collect ids of tool results in the immediately following message
+        // (matches the OpenAI/Anthropic protocol: tool results come right
+        // after the assistant that made the calls).
+        let next_response_ids: HashSet<String> = if i + 1 < messages.len() {
+            let next = &messages[i + 1];
+            let next_role = next.get("role").and_then(|r| r.as_str());
+            if next_role == Some("tool") {
+                // OpenAI: a single role=tool message per call.  Most APIs
+                // accept a sequence of role=tool messages, but we only check
+                // the immediately following one here.
+                next.get("tool_call_id")
+                    .and_then(|id| id.as_str())
+                    .filter(|id| !id.is_empty())
+                    .map(|id| {
+                        let mut s = HashSet::new();
+                        s.insert(id.to_string());
+                        s
+                    })
+                    .unwrap_or_default()
+            } else if next_role == Some("user") {
+                // Anthropic: a user message whose content array has tool_result blocks
+                next.get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|b| {
+                                b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                            })
+                            .filter_map(|b| {
+                                b.get("tool_use_id")
+                                    .and_then(|id| id.as_str())
+                                    .filter(|id| !id.is_empty())
+                                    .map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                HashSet::new()
+            }
+        } else {
+            HashSet::new()
+        };
+
+        // OpenAI: tool_calls is a top-level array on the assistant message.
+        let mut stripped_empty_openai = false;
+        if let Some(tool_calls) = messages[i]
+            .get_mut("tool_calls")
+            .and_then(|tc| tc.as_array_mut())
+        {
+            let before = tool_calls.len();
+            tool_calls.retain(|tc| {
+                tc.get("id")
+                    .and_then(|id| id.as_str())
+                    .map_or(false, |id| next_response_ids.contains(id))
+            });
+            if tool_calls.is_empty() {
+                stripped_empty_openai = true;
+            }
+            if tool_calls.len() != before {
+                log::debug!(
+                    "[sanitize-orphan] assistant@{} stripped {}/{} tool_call(s) lacking responses",
+                    i,
+                    before - tool_calls.len(),
+                    before
+                );
+            }
+        }
+        if stripped_empty_openai {
+            if let Some(obj) = messages[i].as_object_mut() {
+                obj.remove("tool_calls");
+            }
+        }
+
+        // Anthropic: content array has tool_use blocks.
+        if let Some(content) = messages[i]
+            .get_mut("content")
+            .and_then(|c| c.as_array_mut())
+        {
+            let before = content.len();
+            content.retain(|b| {
+                if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    b.get("id")
+                        .and_then(|id| id.as_str())
+                        .map_or(false, |id| next_response_ids.contains(id))
+                } else {
+                    true
+                }
+            });
+            if content.len() != before {
+                log::debug!(
+                    "[sanitize-orphan] assistant@{} stripped {}/{} tool_use block(s) lacking responses",
+                    i,
+                    before - content.len(),
+                    before
+                );
+            }
+        }
+    }
 }
 
 /// 请求前主动剥离所有 assistant 消息里的 thinking / redacted_thinking block
@@ -1503,6 +1625,78 @@ mod tests {
         let m = &result["messages"][2];
         assert_eq!(m["role"], "tool");
         assert_eq!(m["tool_call_id"], "call_xyz");
+    }
+
+    // === Pass 2: assistant tool_calls 缺 tool result 的反向清洗 ===
+
+    #[test]
+    fn test_sanitize_strip_unmatched_openai_tool_calls() {
+        // assistant 有 2 个 tool_calls，但后面只跟了 1 个 tool result。
+        // 缺的那一个的 tool_call 必须被剥掉。
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "f1", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "f2", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_a", "content": "ok"},
+                {"role": "user", "content": "thanks"}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        let calls = result["messages"][1]["tool_calls"].as_array().unwrap();
+        let ids: Vec<&str> = calls
+            .iter()
+            .filter_map(|c| c.get("id").and_then(|i| i.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["call_a"], "call_b should be stripped because no result follows");
+    }
+
+    #[test]
+    fn test_sanitize_strip_all_tool_calls_when_no_results() {
+        // assistant 有 tool_calls 但后面没有 tool 消息跟随 → 全部剥掉
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_x", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]},
+                {"role": "user", "content": "no tool result here"}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        assert!(
+            result["messages"][1].get("tool_calls").is_none(),
+            "tool_calls should be removed entirely when all lack responses"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_strip_unmatched_anthropic_tool_use() {
+        // Anthropic: assistant content 里有 2 个 tool_use 块，但下一个 user 消息
+        // 只回应了 1 个 → 多余的 tool_use 必须剥掉
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "let me check"},
+                    {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}},
+                    {"type": "tool_use", "id": "tu_2", "name": "write", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "data"}
+                ]}
+            ]
+        });
+        let result = sanitize_orphan_tool_results(body);
+        let content = result["messages"][1]["content"].as_array().unwrap();
+        let tool_uses: Vec<&str> = content
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .filter_map(|b| b.get("id").and_then(|i| i.as_str()))
+            .collect();
+        assert_eq!(tool_uses, vec!["tu_1"], "tu_2 should be stripped");
     }
 
     // === strip_thinking_blocks 测试 ===

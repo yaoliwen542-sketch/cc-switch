@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.18] - 2026-06-23
+
+### Fixed
+
+- **Forward Tool-Call Integrity Sanitizer**: Added a second pass to `sanitize_orphan_tool_results` that walks every assistant message and strips `tool_calls` (OpenAI) or `tool_use` content blocks (Anthropic) whose ids are not echoed by a matching tool result in the immediately following message.  This fixes the `an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'` and `invalid params, tool call result does not follow tool call (2013)` errors when the body was truncated client-side or compacted externally.
+
 ## [3.17.17] - 2026-06-23
 
 ### Fixed
