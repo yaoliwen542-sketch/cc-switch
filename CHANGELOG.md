@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.21] - 2026-06-23
+
+### Fixed
+
+- **Reactive Tool-Call Orphan Rectifier**: Added `tool_call_rectifier` that detects upstream 400 errors caused by unmatched tool calls (`tool_call_ids did not have response messages`, `tool result's tool id(...) not found (2013)`, `tool call result does not follow tool call (2013)`, `tool_call_id is not found`) and retries the same provider after stripping the offending `tool_calls` / `tool_use` blocks.  This gives `/compact` and normal requests a recovery path when the session history is already corrupted client-side and the pre-flight sanitizer could not prevent it.
+- **Per-Provider Tool-Call Rectifier Retry Flag**: The rectifier retry state is scoped to each provider so that failover to the next provider can still attempt its own repair if needed.
+
 ## [3.17.20] - 2026-06-23
 
 ### Fixed

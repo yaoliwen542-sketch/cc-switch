@@ -18,6 +18,7 @@ use super::{
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
     },
+    tool_call_rectifier::{rectify_if_needed as rectify_tool_call_orphans, should_rectify_tool_call_orphan},
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
@@ -424,6 +425,7 @@ impl RequestForwarder {
             let mut rectifier_retried = false;
             let mut budget_rectifier_retried = false;
             let mut media_rectifier_retried = false;
+            let mut tool_call_rectifier_retried = false;
 
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
             // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
@@ -669,6 +671,150 @@ impl RequestForwarder {
                                         return Err(err);
                                     }
                                     continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Tool-call orphan rectifier: reactive repair for upstream 400 errors
+                    // caused by assistant tool_calls lacking matching tool results.  This
+                    // catches corrupted sessions that the pre-flight sanitizer missed and
+                    // gives /compact and normal requests a recovery path.
+                    {
+                        let error_message = extract_error_message(&e);
+                        if should_rectify_tool_call_orphan(error_message.as_deref()) {
+                            if tool_call_rectifier_retried {
+                                log::warn!(
+                                    "[{app_type_str}] [RECT-105] tool-call orphan 整流器已触发过，不再重试"
+                                );
+                                self.router
+                                    .release_permit_neutral(
+                                        &provider.id,
+                                        app_type_str,
+                                        used_half_open_permit,
+                                    )
+                                    .await;
+                                let mut status = self.status.write().await;
+                                status.failed_requests += 1;
+                                status.last_error = Some(e.to_string());
+                                if status.total_requests > 0 {
+                                    status.success_rate = (status.success_requests as f32
+                                        / status.total_requests as f32)
+                                        * 100.0;
+                                }
+                                return Err(ForwardError {
+                                    error: e,
+                                    provider: Some(provider.clone()),
+                                });
+                            }
+
+                            if let Some(rectified) =
+                                rectify_tool_call_orphans(&mut provider_body, error_message.as_deref())
+                            {
+                                if !rectified.applied {
+                                    log::warn!(
+                                        "[{app_type_str}] [RECT-106] tool-call orphan 整流器触发但无可整流内容"
+                                    );
+                                } else {
+                                    log::info!(
+                                        "[{app_type_str}] [RECT-101] tool-call orphan 整流器触发, stripped_assistants={}, dropped_tool_msgs={}, converted_tool_results={}, ids={:?}",
+                                        rectified.stripped_assistants,
+                                        rectified.dropped_tool_messages,
+                                        rectified.converted_tool_results,
+                                        rectified.removed_ids
+                                    );
+
+                                    let _ = std::mem::replace(&mut tool_call_rectifier_retried, true);
+
+                                    match self
+                                        .forward(
+                                            app_type,
+                                            &method,
+                                            provider,
+                                            endpoint,
+                                            &provider_body,
+                                            &headers,
+                                            &extensions,
+                                            adapter.as_ref(),
+                                        )
+                                        .await
+                                    {
+                                        Ok((response, claude_api_format, outbound_model)) => {
+                                            log::info!("[{app_type_str}] [RECT-102] tool-call orphan 整流重试成功");
+                                            self.record_success_result(
+                                                &provider.id,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                            )
+                                            .await;
+
+                                            {
+                                                let mut current_providers =
+                                                    self.current_providers.write().await;
+                                                current_providers.insert(
+                                                    app_type_str.to_string(),
+                                                    (provider.id.clone(), provider.name.clone()),
+                                                );
+                                            }
+
+                                            {
+                                                let mut status = self.status.write().await;
+                                                status.success_requests += 1;
+                                                status.last_error = None;
+                                                let should_switch =
+                                                    self.current_provider_id_at_start.as_str()
+                                                        != provider.id.as_str();
+                                                if should_switch {
+                                                    status.failover_count += 1;
+                                                    let fm = self.failover_manager.clone();
+                                                    let ah = self.app_handle.clone();
+                                                    let pid = provider.id.clone();
+                                                    let pname = provider.name.clone();
+                                                    let at = app_type_str.to_string();
+
+                                                    tokio::spawn(async move {
+                                                        let _ = fm
+                                                            .try_switch(ah.as_ref(), &at, &pid, &pname)
+                                                            .await;
+                                                    });
+                                                }
+                                                if status.total_requests > 0 {
+                                                    status.success_rate = (status.success_requests
+                                                        as f32
+                                                        / status.total_requests as f32)
+                                                        * 100.0;
+                                                }
+                                            }
+
+                                            return Ok(ForwardResult {
+                                                response,
+                                                provider: provider.clone(),
+                                                claude_api_format,
+                                                outbound_model,
+                                                connection_guard: None,
+                                            });
+                                        }
+                                        Err(retry_err) => {
+                                            log::warn!(
+                                                "[{app_type_str}] [RECT-103] tool-call orphan 整流重试仍失败: {retry_err}"
+                                            );
+                                            if let Some(err) = self
+                                                .handle_rectifier_retry_failure(
+                                                    retry_err,
+                                                    provider,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    "tool-call orphan 整流",
+                                                    &mut last_error,
+                                                    &mut last_provider,
+                                                )
+                                                .await
+                                            {
+                                                return Err(err);
+                                            }
+                                            continue;
+                                        }
+                                    }
                                 }
                             }
                         }
