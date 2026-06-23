@@ -217,9 +217,64 @@ pub fn apply_sliding_window(
         }
     }
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (4b) Post-pass: ensure ALL tool results for preserved tool_calls exist.
+    //      Step 3's forward-scan breaks on the first non-tool message, so tool
+    //      results that are NOT immediately consecutive can be orphaned.  This
+    //      pass collects every tool_call_id from preserved assistants and finds
+    //      the matching tool result anywhere in the message array.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {
+        // 1. Collect all tool_call_ids that preserved assistant messages reference
+        let mut required_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &i in &preserve_indices {
+            if let Some(msg) = messages.get(i) {
+                if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc in tool_calls {
+                            if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
+                                required_ids.insert(id.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. For each required id, check if a preserved tool result already covers it.
+        //    If not, find the tool result in the full message array and preserve it.
+        if !required_ids.is_empty() {
+            let mut covered_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for &i in &preserve_indices {
+                if let Some(msg) = messages.get(i) {
+                    if msg.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                        if let Some(id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
+                            covered_ids.insert(id.to_string());
+                        }
+                    }
+                }
+            }
+
+            let missing_ids: Vec<String> = required_ids.difference(&covered_ids).cloned().collect();
+            if !missing_ids.is_empty() {
+                for (i, msg) in messages.iter().enumerate() {
+                    if !preserve_indices.contains(&i)
+                        && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
+                    {
+                        if let Some(id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
+                            if missing_ids.contains(&id.to_string()) {
+                                preserve_indices.insert(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // (5) Budget backfill: keep extra recent messages while under target
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let mandatory_indices = preserve_indices.clone();
     let mandatory_tokens: u64 = token_counts
         .iter()
@@ -744,6 +799,50 @@ mod tests {
                 .messages
                 .iter()
                 .any(|m| m["role"].as_str() == Some("assistant")));
+        }
+    }
+
+    #[test]
+    fn orphaned_tool_result_preserved_by_post_pass() {
+        // Regression: assistant with tool_calls at idx 2, but tool result at idx 4
+        // (idx 3 is a non-tool message that breaks step 3's forward scan).
+        // The post-pass (step 4b) must rescue the orphaned tool result.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc_old", "function": {"name": "read", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}), // non-tool msg between assistant and tool result
+            serde_json::json!({"role": "tool", "tool_call_id": "tc_old", "content": "file content"}),
+            serde_json::json!({"role": "user", "content": "u3"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "done",
+            }),
+        ];
+        let tokens = vec![50u64, 100, 50, 100, 50, 100, 50];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        // The assistant at idx 2 must NOT be preserved without its tool result,
+        // OR the tool result at idx 4 must also be preserved.
+        // Either both are present or neither (tool_calls stripped would also work,
+        // but current impl preserves both).
+        let has_assistant_with_tc = result.messages.iter().any(|m| {
+            m["role"].as_str() == Some("assistant") && m.get("tool_calls").is_some()
+        });
+        let has_tool_result = result
+            .messages
+            .iter()
+            .any(|m| m["tool_call_id"].as_str() == Some("tc_old"));
+
+        if has_assistant_with_tc {
+            assert!(
+                has_tool_result,
+                "assistant with tool_calls preserved but tool result for tc_old is missing!"
+            );
         }
     }
 

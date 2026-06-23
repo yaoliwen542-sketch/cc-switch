@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.14] - 2026-06-23
+
+### Fixed
+
+- **Orphaned Tool Results After Context Rolling**: The sliding-window trimmer's forward-scan for tool results stopped at the first non-`tool` message, so a `tool` message separated from its parent assistant by any other role (e.g. a system injection) was silently dropped. The API then rejected the request with `"an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'"`. A post-pass now collects every `tool_call_id` referenced by preserved assistant messages and rescues any matching tool results from anywhere in the message array.
+
 ## [3.17.13] - 2026-06-23
 
 ### Fixed
