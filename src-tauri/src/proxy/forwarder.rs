@@ -1207,9 +1207,8 @@ impl RequestForwarder {
         //   - "tool result's tool id(...) not found (2013)"
         //   - "tool_call_id is not found"
         //   - "an assistant message with 'tool_calls' must be followed by tool messages..."
-        // Must run BEFORE rolling-context compression so a malformed body is
-        // also cleaned on the compressed copy.
-        mapped_body = super::copilot_optimizer::sanitize_orphan_tool_results(mapped_body);
+        mapped_body =
+            super::copilot_optimizer::sanitize_orphan_tool_results_with_count_log(mapped_body, "pre");
 
         // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
         // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
@@ -1527,6 +1526,15 @@ impl RequestForwarder {
         } else {
             request_body
         };
+
+        // Re-run the universal orphan sanitizer AFTER rolling-context compression.
+        // The compressor's fixed-point validation preserves tool-pair integrity,
+        // but format-specific edge cases (especially Anthropic-format tool_use /
+        // tool_result blocks) may still leave orphan references.  A second pass
+        // converts any remaining orphan tool_result blocks to plain text so the
+        // upstream API does not reject the request.
+        request_body =
+            super::copilot_optimizer::sanitize_orphan_tool_results_with_count_log(request_body, "post-rolling");
 
         if matches!(app_type, AppType::Codex) {
             self.apply_media_prevention(&mut request_body, provider);

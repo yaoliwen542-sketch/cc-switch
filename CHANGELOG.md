@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.20] - 2026-06-23
+
+### Fixed
+
+- **Anthropic-Format Tool-Pair Integrity in Rolling Context**: The rolling-context compressor's fixed-point validation previously only understood OpenAI-format bodies (`assistant.tool_calls[]` + `role: "tool"`).  For Claude native / Anthropic-format requests it could drop an assistant message containing `tool_use` content blocks while leaving the subsequent user message containing matching `tool_result` blocks, causing upstream Anthropic errors such as `tool result's tool id(...) not found (2013)`.  The fixed-point validator now also tracks Anthropic `tool_use` ids and `tool_result` `tool_use_id`s, dropping uncovered assistants and orphan tool-result user messages.
+- **Post-Compression Orphan Sanitizer Pass**: The universal orphan tool-result sanitizer now runs a second time **after** rolling-context compression.  This catches any format-specific edge cases (including Anthropic-format `tool_result` blocks) that compression may newly introduce, converting remaining orphans to plain text before the body is forwarded upstream.
+- **Enhanced Orphan Sanitizer Diagnostics**: `sanitize_orphan_tool_results` now logs a privacy-safe summary of the message array (roles, tool-call counts, ids) before and after each pass, and logs every individual orphan conversion / tool-call strip / empty-assistant drop.  This makes it possible to verify from the log that the sanitizer is executing and what actions it took for a given request.
+
 ## [3.17.19] - 2026-06-23
 
 ### Fixed

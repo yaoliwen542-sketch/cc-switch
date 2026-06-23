@@ -14,6 +14,59 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Build a concise, privacy-safe summary of a request body's messages array for
+/// diagnostic logging.  Only exposes role sequences and tool id presence, never
+/// message text content.
+fn summarize_messages_for_log(body: &Value) -> String {
+    let msgs = match body.get("messages").and_then(|m| m.as_array()) {
+        Some(arr) => arr,
+        None => return "no messages".to_string(),
+    };
+    let parts: Vec<String> = msgs
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+            let mut extras = Vec::new();
+            if let Some(tc) = m.get("tool_calls").and_then(|t| t.as_array()) {
+                let ids: Vec<&str> = tc
+                    .iter()
+                    .filter_map(|t| t.get("id").and_then(|id| id.as_str()))
+                    .collect();
+                extras.push(format!("tc={}", ids.len()));
+                if !ids.is_empty() {
+                    extras.push(format!("ids=[{}]", ids.join(",")));
+                }
+            }
+            if let Some(tid) = m.get("tool_call_id").and_then(|id| id.as_str()) {
+                extras.push(format!("tid={}", tid));
+            }
+            if let Some(blocks) = m.get("content").and_then(|c| c.as_array()) {
+                let tool_use_count = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                    .count();
+                let tool_result_count = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                    .count();
+                if tool_use_count > 0 {
+                    extras.push(format!("tu={}", tool_use_count));
+                }
+                if tool_result_count > 0 {
+                    extras.push(format!("tr={}", tool_result_count));
+                }
+            }
+            if extras.is_empty() {
+                format!("[{}]{}={}", i, role, "")
+            } else {
+                format!("[{}]{}:{}", i, role, extras.join(","))
+            }
+        })
+        .collect();
+    format!("{} msgs: {}", msgs.len(), parts.join(" | "))
+}
+
 /// 请求分类结果
 #[derive(Debug, Clone)]
 pub struct CopilotClassification {
@@ -375,6 +428,9 @@ fn detect_subagent(body: &Value) -> bool {
 ///
 /// 与 copilot-api 的 `sanitizeOrphanToolResults` 对齐。
 pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
+    let before_summary = summarize_messages_for_log(&body);
+    log::debug!("[sanitize-orphan] start: {before_summary}");
+
     // Pass 1: tool result / tool messages referencing an id not in the
     // immediately preceding assistant turn → convert to user+text.
     sanitize_orphan_tool_results_pass1(&mut body);
@@ -383,6 +439,34 @@ pub fn sanitize_orphan_tool_results(mut body: Value) -> Value {
     // matching tool result → strip the missing tool_call entries.
     sanitize_orphan_tool_results_pass2(&mut body);
 
+    let after_summary = summarize_messages_for_log(&body);
+    log::debug!("[sanitize-orphan] end: {after_summary}");
+
+    body
+}
+
+/// Wrapper that logs message-count deltas for observability.  Used by the
+/// forwarder before and after rolling-context compression.
+pub fn sanitize_orphan_tool_results_with_count_log(body: Value, label: &str) -> Value {
+    let pre_count = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let body = sanitize_orphan_tool_results(body);
+    let post_count = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    if pre_count != post_count {
+        log::info!(
+            "[sanitize-orphan][{}] cleaned body: {} -> {} messages",
+            label,
+            pre_count,
+            post_count
+        );
+    }
     body
 }
 
@@ -444,6 +528,11 @@ fn sanitize_orphan_tool_results_pass1(body: &mut Value) {
                                 .join("\n"),
                             _ => String::new(),
                         };
+                        log::debug!(
+                            "[sanitize-orphan] pass1 converting orphan Anthropic tool_result block@{} (tool_use_id={:?})",
+                            i,
+                            tool_use_id
+                        );
                         *block = serde_json::json!({
                             "type": "text",
                             "text": format!("[Tool result for {}]: {}", tool_use_id, content_text)

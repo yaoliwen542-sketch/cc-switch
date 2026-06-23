@@ -405,12 +405,15 @@ pub fn apply_sliding_window(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // (4c) Fixed-point validation of tool-call / tool-result pairing.
     //
+    // Handles BOTH OpenAI format (assistant.tool_calls[] + role=tool messages)
+    // and Anthropic format (assistant.content[].tool_use + user.content[].tool_result).
+    //
     // Invariants enforced before the final message list is built:
-    //   - Every preserved assistant message with tool_calls has ALL of its
-    //     tool_call_ids covered by at least one preserved tool result.
-    //   - Every preserved tool result has a non-empty tool_call_id that is
-    //     referenced by at least one preserved assistant message.
-    //   - Assistant messages containing tool_calls with empty/missing ids are
+    //   - Every preserved assistant message with tool_calls / tool_use blocks has
+    //     ALL of its tool ids covered by at least one preserved tool result.
+    //   - Every preserved tool result has a non-empty tool id that is referenced
+    //     by at least one preserved assistant message.
+    //   - Assistant messages containing tool calls with empty/missing ids are
     //     dropped entirely, because the API cannot match them.
     //
     // This is a fixed-point computation because dropping a tool result can
@@ -428,30 +431,93 @@ pub fn apply_sliding_window(
             !id.trim().is_empty()
         }
 
-        // Map preserved assistant index -> its valid tool_call ids.
-        // Assistants whose tool_calls array has no valid ids are dropped
-        // entirely because the API cannot match them to any tool result.
+        /// Collect OpenAI-format tool_call ids from an assistant message.
+        fn collect_openai_tool_call_ids(msg: &Value) -> Option<std::collections::HashSet<String>> {
+            let tool_calls = msg.get("tool_calls").and_then(|tc| tc.as_array())?;
+            let ids: std::collections::HashSet<String> = tool_calls
+                .iter()
+                .filter_map(|tc| {
+                    tc.get("id")
+                        .and_then(|id| id.as_str())
+                        .filter(|id| is_valid_id(id))
+                        .map(|id| id.to_string())
+                })
+                .collect();
+            let all_valid = tool_calls.iter().all(|tc| {
+                tc.get("id")
+                    .and_then(|id| id.as_str())
+                    .map_or(false, is_valid_id)
+            });
+            if all_valid && !ids.is_empty() { Some(ids) } else { None }
+        }
+
+        /// Collect Anthropic-format tool_use ids from an assistant message's content array.
+        fn collect_anthropic_tool_use_ids(msg: &Value) -> Option<std::collections::HashSet<String>> {
+            let content = msg.get("content").and_then(|c| c.as_array())?;
+            let ids: std::collections::HashSet<String> = content
+                .iter()
+                .filter_map(|block| {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        block
+                            .get("id")
+                            .and_then(|id| id.as_str())
+                            .filter(|id| is_valid_id(id))
+                            .map(|id| id.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let all_valid = content.iter().all(|block| {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    block
+                        .get("id")
+                        .and_then(|id| id.as_str())
+                        .map_or(false, is_valid_id)
+                } else {
+                    true
+                }
+            });
+            if all_valid && !ids.is_empty() { Some(ids) } else { None }
+        }
+
+        // Map preserved assistant index -> its valid tool ids (OpenAI + Anthropic).
+        // Assistants whose tool calls have no valid ids are dropped entirely.
         let mut assistant_ids: std::collections::HashMap<usize, std::collections::HashSet<String>> =
             std::collections::HashMap::new();
         let mut bad_assistants: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for &i in &preserved_indices_sorted {
             if let Some(msg) = messages.get(i) {
                 if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                        let ids: std::collections::HashSet<String> = tool_calls
+                    let mut ids = std::collections::HashSet::new();
+                    let mut has_tool_calls = false;
+                    let mut all_valid = true;
+
+                    if let Some(openai_ids) = collect_openai_tool_call_ids(msg) {
+                        ids.extend(openai_ids);
+                        has_tool_calls = true;
+                    } else if msg.get("tool_calls").is_some() {
+                        // tool_calls present but malformed/empty
+                        has_tool_calls = true;
+                        all_valid = false;
+                    }
+
+                    if let Some(anthropic_ids) = collect_anthropic_tool_use_ids(msg) {
+                        ids.extend(anthropic_ids);
+                        has_tool_calls = true;
+                    } else if msg.get("content").and_then(|c| c.as_array()).is_some() {
+                        // content is an array but contains malformed/empty tool_use blocks
+                        let content = msg.get("content").and_then(|c| c.as_array()).unwrap();
+                        if content
                             .iter()
-                            .filter_map(|tc| {
-                                tc.get("id")
-                                    .and_then(|id| id.as_str())
-                                    .filter(|id| is_valid_id(id))
-                                    .map(|id| id.to_string())
-                            })
-                            .collect();
-                        let all_valid = tool_calls.iter().all(|tc| {
-                            tc.get("id")
-                                .and_then(|id| id.as_str())
-                                .map_or(false, is_valid_id)
-                        });
+                            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                        {
+                            has_tool_calls = true;
+                            all_valid = false;
+                        }
+                    }
+
+                    if has_tool_calls {
                         if all_valid && !ids.is_empty() {
                             assistant_ids.insert(i, ids);
                         } else {
@@ -465,9 +531,9 @@ pub fn apply_sliding_window(
         // Seed the fixed-point drop set with the bad assistants.
         let mut dropped_assistants: std::collections::HashSet<usize> = bad_assistants;
 
-        // Map preserved tool result index -> its tool_call_id.
-        // We keep a map for EVERY preserved tool message (including invalid ids),
-        // because budget backfill can re-introduce standalone tool messages that
+        // Map preserved tool result index -> its tool id (OpenAI + Anthropic).
+        // We keep a map for EVERY preserved tool result (including invalid ids),
+        // because budget backfill can re-introduce standalone tool results that
         // must then be dropped if they are not covered by a surviving assistant.
         let mut tool_result_ids: std::collections::HashMap<usize, Option<String>> =
             std::collections::HashMap::new();
@@ -479,21 +545,52 @@ pub fn apply_sliding_window(
                         .and_then(|id| id.as_str())
                         .map(|id| id.to_string());
                     tool_result_ids.insert(i, id);
+                } else if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    // Anthropic format: tool_result blocks live inside the user
+                    // message's content array.  We treat the *whole* user message
+                    // as a tool-result carrier when it contains ONLY tool_result
+                    // blocks; mixed messages are handled by the post-compression
+                    // universal sanitizer.
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                        let tool_result_blocks: Vec<&Value> = content
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                            .collect();
+                        if !tool_result_blocks.is_empty()
+                            && tool_result_blocks.len() == content.len()
+                        {
+                            // Use the first tool_use_id as the representative id;
+                            // if multiple parallel tool_results exist, all ids
+                            // must belong to the same assistant turn in valid
+                            // Anthropic history.  For validation purposes we
+                            // require every id to be covered.
+                            let ids: Vec<String> = tool_result_blocks
+                                .iter()
+                                .filter_map(|b| {
+                                    b.get("tool_use_id")
+                                        .and_then(|id| id.as_str())
+                                        .filter(|id| is_valid_id(id))
+                                        .map(|id| id.to_string())
+                                })
+                                .collect();
+                            if !ids.is_empty() {
+                                // Store the concatenated ids so we can verify all
+                                // are covered.  Empty/missing ids make the message
+                                // a bad tool result.
+                                tool_result_ids.insert(i, Some(ids.join("\x1f")));
+                            } else {
+                                tool_result_ids.insert(i, None);
+                            }
+                        }
+                    }
                 }
             }
         }
 
         // Iteratively drop uncovered assistants and orphaned tool results.
-        // Note: `dropped_assistants` is seeded above with the "bad" assistants
-        // (those with invalid tool_call ids in their tool_calls array).  An
-        // assistant with tool_calls whose tool results were all dropped is
-        // also added here.  The API requires every preserved tool_call to
-        // have a matching tool result, so dropping the whole assistant is
-        // the safe choice (we lose its text content but keep the message
-        // list API-compliant).
         let mut dropped_tool_results: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-        // Helper: is a non-empty tool_call_id covered by any surviving assistant?
+        // Helper: is a non-empty tool id covered by any surviving assistant?
         let is_covered = |id: &str,
                           dropped_assistants: &std::collections::HashSet<usize>|
          -> bool {
@@ -506,13 +603,17 @@ pub fn apply_sliding_window(
         while changed {
             changed = false;
 
-            // Drop tool results that are not covered by a surviving assistant.
+            // Drop tool results that are not fully covered by a surviving assistant.
             for (&i, id) in &tool_result_ids {
                 if dropped_tool_results.contains(&i) {
                     continue;
                 }
                 let keep = match id.as_deref() {
-                    Some(id) if is_valid_id(id) => is_covered(id, &dropped_assistants),
+                    Some(id) if is_valid_id(id) => {
+                        // Anthropic user-message carriers may hold multiple ids
+                        // separated by the unit separator.
+                        id.split('\x1f').all(|part| is_covered(part, &dropped_assistants))
+                    }
                     _ => false,
                 };
                 if !keep {
@@ -521,7 +622,7 @@ pub fn apply_sliding_window(
                 }
             }
 
-            // Drop assistants whose tool_call ids are not all covered by surviving tools.
+            // Drop assistants whose tool ids are not all covered by surviving tools.
             for (&i, ids) in &assistant_ids {
                 if dropped_assistants.contains(&i) {
                     continue;
@@ -532,7 +633,10 @@ pub fn apply_sliding_window(
                             return false;
                         }
                         match tid.as_deref() {
-                            Some(tid) if is_valid_id(tid) => tid == id.as_str(),
+                            Some(tid) if is_valid_id(tid) => {
+                                // OpenAI: single id; Anthropic carrier: multiple ids.
+                                tid.split('\x1f').any(|part| part == id.as_str())
+                            }
                             _ => false,
                         }
                     })
@@ -1273,6 +1377,111 @@ mod tests {
                 "assistant with tool_calls preserved but tool result for tc_old is missing!"
             );
         }
+    }
+
+    #[test]
+    fn anthropic_tool_pair_preserved() {
+        // Anthropic format: assistant content has tool_use blocks; the next user
+        // message's content has matching tool_result blocks.  Both must survive
+        // compression as an atomic pair.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "calling tool"},
+                    {"type": "tool_use", "id": "call_abc123", "name": "read", "input": {}}
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_abc123", "content": "file content"}
+                ]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let has_tool_use = result.messages.iter().any(|m| {
+            m.get("content").and_then(|c| c.as_array()).map_or(false, |blocks| {
+                blocks.iter().any(|b| {
+                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                        && b.get("id").and_then(|i| i.as_str()) == Some("call_abc123")
+                })
+            })
+        });
+        let has_tool_result = result.messages.iter().any(|m| {
+            m.get("content").and_then(|c| c.as_array()).map_or(false, |blocks| {
+                blocks.iter().any(|b| {
+                    b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                        && b.get("tool_use_id").and_then(|i| i.as_str()) == Some("call_abc123")
+                })
+            })
+        });
+        assert!(has_tool_use, "Anthropic tool_use block must be preserved");
+        assert!(has_tool_result, "Anthropic tool_result block must be preserved");
+    }
+
+    #[test]
+    fn anthropic_orphan_tool_result_dropped() {
+        // Anthropic format: a user message contains a tool_result whose
+        // tool_use_id is not referenced by any surviving assistant.  The whole
+        // user message must be dropped to avoid "tool result's tool id not found".
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_orphan_123", "content": "orphan result"}
+                ]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let has_orphan = result.messages.iter().any(|m| {
+            m.get("content").and_then(|c| c.as_array()).map_or(false, |blocks| {
+                blocks.iter().any(|b| {
+                    b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                        && b.get("tool_use_id").and_then(|i| i.as_str()) == Some("call_orphan_123")
+                })
+            })
+        });
+        assert!(!has_orphan, "orphan Anthropic tool_result user message must be dropped");
+    }
+
+    #[test]
+    fn anthropic_tool_use_without_result_drops_assistant() {
+        // Anthropic format: an assistant has a tool_use block but the matching
+        // tool_result user message is missing.  The assistant must be dropped.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "call_unmatched_456", "name": "read", "input": {}}
+                ]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let has_tool_use = result.messages.iter().any(|m| {
+            m.get("content").and_then(|c| c.as_array()).map_or(false, |blocks| {
+                blocks.iter().any(|b| {
+                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                        && b.get("id").and_then(|i| i.as_str()) == Some("call_unmatched_456")
+                })
+            })
+        });
+        assert!(!has_tool_use, "Anthropic assistant with uncovered tool_use must be dropped");
     }
 
     #[test]
