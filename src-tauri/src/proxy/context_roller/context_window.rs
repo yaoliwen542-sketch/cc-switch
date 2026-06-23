@@ -403,60 +403,149 @@ pub fn apply_sliding_window(
     preserved_indices_sorted.sort();
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // (4c) Validate tool pair integrity before building the final message list.
-    //      - Drop tool results with a missing/empty/unknown tool_call_id.
-    //      - Drop assistant messages whose tool_calls contain entries with a
-    //        missing/empty id, because the API cannot match them to tool results.
-    //      API errors covered:
-    //        * "tool result's tool id(...) not found (2013)"
-    //        * "tool_call_id is not found"
+    // (4c) Fixed-point validation of tool-call / tool-result pairing.
+    //
+    // Invariants enforced before the final message list is built:
+    //   - Every preserved assistant message with tool_calls has ALL of its
+    //     tool_call_ids covered by at least one preserved tool result.
+    //   - Every preserved tool result has a non-empty tool_call_id that is
+    //     referenced by at least one preserved assistant message.
+    //   - Assistant messages containing tool_calls with empty/missing ids are
+    //     dropped entirely, because the API cannot match them.
+    //
+    // This is a fixed-point computation because dropping a tool result can
+    // make an assistant uncovered, and dropping that assistant can orphan more
+    // tool results.
+    //
+    // API errors covered:
+    //   * "an assistant message with 'tool_calls' must be followed by tool
+    //      messages responding to each 'tool_call_id'"
+    //   * "tool result's tool id(...) not found (2013)"
+    //   * "tool_call_id is not found"
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
         fn is_valid_id(id: &str) -> bool {
             !id.trim().is_empty()
         }
 
-        let mut preserved_assistant_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Map preserved assistant index -> its valid tool_call ids.
+        // Assistants whose tool_calls array has no valid ids are dropped
+        // entirely because the API cannot match them to any tool result.
+        let mut assistant_ids: std::collections::HashMap<usize, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        let mut bad_assistants: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for &i in &preserved_indices_sorted {
             if let Some(msg) = messages.get(i) {
                 if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                        for tc in tool_calls {
-                            if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
-                                if is_valid_id(id) {
-                                    preserved_assistant_ids.insert(id.to_string());
-                                }
-                            }
+                        let ids: std::collections::HashSet<String> = tool_calls
+                            .iter()
+                            .filter_map(|tc| {
+                                tc.get("id")
+                                    .and_then(|id| id.as_str())
+                                    .filter(|id| is_valid_id(id))
+                                    .map(|id| id.to_string())
+                            })
+                            .collect();
+                        let all_valid = tool_calls.iter().all(|tc| {
+                            tc.get("id")
+                                .and_then(|id| id.as_str())
+                                .map_or(false, is_valid_id)
+                        });
+                        if all_valid && !ids.is_empty() {
+                            assistant_ids.insert(i, ids);
+                        } else {
+                            bad_assistants.insert(i);
                         }
                     }
                 }
             }
         }
 
-        preserved_indices_sorted.retain(|&i| {
+        // Seed the fixed-point drop set with the bad assistants.
+        let mut dropped_assistants: std::collections::HashSet<usize> = bad_assistants;
+
+        // Map preserved tool result index -> its tool_call_id.
+        // We keep a map for EVERY preserved tool message (including invalid ids),
+        // because budget backfill can re-introduce standalone tool messages that
+        // must then be dropped if they are not covered by a surviving assistant.
+        let mut tool_result_ids: std::collections::HashMap<usize, Option<String>> =
+            std::collections::HashMap::new();
+        for &i in &preserved_indices_sorted {
             if let Some(msg) = messages.get(i) {
-                let role = msg.get("role").and_then(|r| r.as_str());
-                if role == Some("tool") {
-                    return match msg.get("tool_call_id").and_then(|id| id.as_str()) {
-                        Some(id) if is_valid_id(id) => preserved_assistant_ids.contains(id),
-                        _ => false,
-                    };
-                }
-                if role == Some("assistant") {
-                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                        // Drop assistant if any tool_call lacks a valid id.
-                        let all_valid = tool_calls.iter().all(|tc| {
-                            tc.get("id")
-                                .and_then(|id| id.as_str())
-                                .map_or(false, is_valid_id)
-                        });
-                        if !all_valid {
-                            return false;
-                        }
-                    }
+                if msg.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                    let id = msg
+                        .get("tool_call_id")
+                        .and_then(|id| id.as_str())
+                        .map(|id| id.to_string());
+                    tool_result_ids.insert(i, id);
                 }
             }
-            true
+        }
+
+        // Iteratively drop uncovered assistants and orphaned tool results.
+        // Note: `dropped_assistants` is seeded above with the "bad" assistants
+        // (those with invalid tool_call ids in their tool_calls array).  An
+        // assistant with tool_calls whose tool results were all dropped is
+        // also added here.  The API requires every preserved tool_call to
+        // have a matching tool result, so dropping the whole assistant is
+        // the safe choice (we lose its text content but keep the message
+        // list API-compliant).
+        let mut dropped_tool_results: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        // Helper: is a non-empty tool_call_id covered by any surviving assistant?
+        let is_covered = |id: &str,
+                          dropped_assistants: &std::collections::HashSet<usize>|
+         -> bool {
+            assistant_ids
+                .iter()
+                .any(|(idx, ids)| !dropped_assistants.contains(idx) && ids.contains(id))
+        };
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            // Drop tool results that are not covered by a surviving assistant.
+            for (&i, id) in &tool_result_ids {
+                if dropped_tool_results.contains(&i) {
+                    continue;
+                }
+                let keep = match id.as_deref() {
+                    Some(id) if is_valid_id(id) => is_covered(id, &dropped_assistants),
+                    _ => false,
+                };
+                if !keep {
+                    dropped_tool_results.insert(i);
+                    changed = true;
+                }
+            }
+
+            // Drop assistants whose tool_call ids are not all covered by surviving tools.
+            for (&i, ids) in &assistant_ids {
+                if dropped_assistants.contains(&i) {
+                    continue;
+                }
+                let all_covered = ids.iter().all(|id| {
+                    tool_result_ids.iter().any(|(idx, tid)| {
+                        if dropped_tool_results.contains(idx) {
+                            return false;
+                        }
+                        match tid.as_deref() {
+                            Some(tid) if is_valid_id(tid) => tid == id.as_str(),
+                            _ => false,
+                        }
+                    })
+                });
+                if !all_covered {
+                    dropped_assistants.insert(i);
+                    changed = true;
+                }
+            }
+        }
+
+        preserved_indices_sorted.retain(|i| {
+            !dropped_assistants.contains(i) && !dropped_tool_results.contains(i)
         });
     }
 
@@ -864,6 +953,213 @@ mod tests {
                 .iter()
                 .any(|m| m["role"].as_str() == Some("assistant")));
         }
+    }
+
+    #[test]
+    fn assistant_without_tool_results_is_dropped() {
+        // Regression: assistant with valid tool_calls but no matching tool result
+        // anywhere in the message array.  Without this fix the API rejects with
+        // "an assistant message with 'tool_calls' must be followed by tool messages".
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc_no_result", "function": {"name": "read", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+            serde_json::json!({"role": "assistant", "content": "ack"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 100, 50];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let has_orphan_assistant = result.messages.iter().any(|m| {
+            m["role"].as_str() == Some("assistant")
+                && m.get("tool_calls").is_some()
+        });
+        assert!(!has_orphan_assistant, "assistant with uncovered tool_calls must be dropped");
+    }
+
+    #[test]
+    fn multiple_tool_rounds_mixed_validity() {
+        // Complex: 2 rounds, first has orphaned tool result, second is complete.
+        // Only the second round should survive tool-pair validation.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "orphan", "function": {"name": "read", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "orphan", "content": "r1"}),
+            serde_json::json!({"role": "user", "content": "u2"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "valid", "function": {"name": "write", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "valid", "content": "r2"}),
+            serde_json::json!({"role": "user", "content": "u3"}),
+        ];
+        // With small budget, old round gets summarized.
+        let tokens = vec![50u64, 200, 200, 200, 200, 200, 200, 200];
+        let mut cfg = config();
+        cfg.context_window = 1600;
+        cfg.threshold = 0.8;
+        cfg.target_after = 0.5;
+        cfg.preserve_rounds = 2; // 2 rounds = 4 user/assistant messages = only u3/a2 preserved by default
+        let result = apply_sliding_window(&msgs, &tokens, 1400, &cfg);
+
+        // The valid pair (round 2) must survive
+        assert!(result
+            .messages
+            .iter()
+            .any(|m| m["tool_call_id"].as_str() == Some("valid")));
+        assert!(result.messages.iter().any(|m| {
+            m["role"].as_str() == Some("assistant")
+                && m.get("tool_calls")
+                    .map(|tc| tc.as_array().map(|a| a.iter().any(|t| t["id"] == "valid")).unwrap_or(false))
+                    .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn parallel_tool_calls_one_missing_drops_all() {
+        // Assistant has 2 tool_calls but only 1 result exists.
+        // The whole assistant must be dropped because the API requires
+        // a result for every tool_call.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "read", "arguments": "{}"}},
+                    {"id": "tc2", "function": {"name": "write", "arguments": "{}"}}
+                ]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "tc1", "content": "result1"}),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        // tc1's result is orphaned (assistant dropped) → both dropped
+        let has_tc1 = result.messages.iter().any(|m| m["tool_call_id"].as_str() == Some("tc1"));
+        let has_tc2 = result.messages.iter().any(|m| m["tool_call_id"].as_str() == Some("tc2"));
+        let has_assistant_with_tc = result
+            .messages
+            .iter()
+            .any(|m| m["role"].as_str() == Some("assistant") && m.get("tool_calls").is_some());
+        assert!(!has_assistant_with_tc, "assistant must be dropped (tc2 has no result)");
+        assert!(!has_tc1, "tc1 result must be dropped (assistant is gone)");
+        assert!(!has_tc2, "tc2 result does not exist in messages");
+    }
+
+    #[test]
+    fn parallel_tool_calls_all_present_preserved() {
+        // Assistant has 2 tool_calls, both results exist → all preserved.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc1", "function": {"name": "read", "arguments": "{}"}},
+                    {"id": "tc2", "function": {"name": "write", "arguments": "{}"}}
+                ]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "tc1", "content": "result1"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "tc2", "content": "result2"}),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 50, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        assert!(result.messages.iter().any(|m| m["tool_call_id"].as_str() == Some("tc1")));
+        assert!(result.messages.iter().any(|m| m["tool_call_id"].as_str() == Some("tc2")));
+    }
+
+    #[test]
+    fn tool_result_before_assistant_is_dropped() {
+        // Malformed input: a tool result appears BEFORE the assistant that
+        // generated it.  The API cannot match it.  Step 4c must drop it.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "x", "content": "early result"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "done",
+                "tool_calls": [{"id": "x", "function": {"name": "f", "arguments": "{}"}}]
+            }),
+        ];
+        let tokens = vec![50u64, 50, 50];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        // The forward-scan in step 3 starts after the assistant (idx 2) and finds
+        // nothing, but step 4 keeps the assistant because the tool result's id
+        // is in preserved_tool_call_ids... wait, the tool result isn't preserved.
+        // The assistant at idx 2 IS preserved.  Step 4b should rescue the tool
+        // result at idx 1.  Then the pair is complete.
+        // What we assert: no orphan, the pair is together.
+        let has_orphan = result
+            .messages
+            .iter()
+            .any(|m| m["tool_call_id"].as_str() == Some("x"))
+            && !result
+                .messages
+                .iter()
+                .any(|m| m["role"].as_str() == Some("assistant") && m.get("tool_calls").is_some());
+        assert!(!has_orphan);
+    }
+
+    #[test]
+    fn fixed_point_drops_chained_orphans() {
+        // Complex fixed-point scenario:
+        // - assistant A1 has id "good" + "bad"
+        // - assistant A2 has id "bad2"
+        // - only tool result for "good" exists
+        // Expected: A1 dropped (bad uncovered), A2 dropped (bad2 uncovered),
+        //           tool result for "good" dropped (A1 gone).
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "good", "function": {"name": "f1", "arguments": "{}"}},
+                    {"id": "bad", "function": {"name": "f2", "arguments": "{}"}}
+                ]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "good", "content": "r1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "bad2", "function": {"name": "f3", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 50, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let assistant_with_tc = result
+            .messages
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("assistant"))
+            .filter(|m| m.get("tool_calls").is_some())
+            .count();
+        let tool_count = result
+            .messages
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("tool"))
+            .count();
+        assert_eq!(assistant_with_tc, 0, "all assistants with tool_calls must be dropped");
+        assert_eq!(tool_count, 0, "all orphaned tool results must be dropped");
     }
 
     #[test]

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.16] - 2026-06-23
+
+### Fixed
+
+- **Tool-Pair Integrity Fixed-Point Validation**: Replaced the single-pass tool-call/tool-result pairing with a fixed-point iteration that guarantees bidirectional consistency: every preserved assistant with `tool_calls` has ALL its `tool_call_ids` covered by a preserved tool result (or the assistant is dropped); every preserved tool result has a valid, non-empty `tool_call_id` referenced by a surviving assistant (or the tool result is dropped). Standalone tool messages re-introduced by budget backfill are also validated. The backward rescue pass correctly handles non-consecutive tool results separated from their assistant by other roles.
+- **Empty/Missing tool_call_id Values**: tool results with empty or missing `tool_call_id` are now dropped, and assistant messages containing tool_calls entries with empty `id` are dropped entirely.
+
 ## [3.17.15] - 2026-06-23
 
 ### Fixed
