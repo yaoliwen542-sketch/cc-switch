@@ -183,7 +183,9 @@ pub fn apply_sliding_window(
         if preserve_indices.contains(&i) && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
         {
             if let Some(tool_call_id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
-                preserved_tool_call_ids.insert(tool_call_id.to_string());
+                if !tool_call_id.trim().is_empty() {
+                    preserved_tool_call_ids.insert(tool_call_id.to_string());
+                }
             }
         }
     }
@@ -196,7 +198,7 @@ pub fn apply_sliding_window(
                 if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
                     for tc in tool_calls {
                         if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
-                            if preserved_tool_call_ids.contains(id) {
+                            if !id.trim().is_empty() && preserved_tool_call_ids.contains(id) {
                                 preserve_indices.insert(i);
                                 // Also keep any tool results that follow this assistant
                                 let mut j = i + 1;
@@ -233,7 +235,9 @@ pub fn apply_sliding_window(
                     if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
                         for tc in tool_calls {
                             if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
-                                required_ids.insert(id.to_string());
+                                if !id.trim().is_empty() {
+                                    required_ids.insert(id.to_string());
+                                }
                             }
                         }
                     }
@@ -249,7 +253,9 @@ pub fn apply_sliding_window(
                 if let Some(msg) = messages.get(i) {
                     if msg.get("role").and_then(|r| r.as_str()) == Some("tool") {
                         if let Some(id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
-                            covered_ids.insert(id.to_string());
+                            if !id.trim().is_empty() {
+                                covered_ids.insert(id.to_string());
+                            }
                         }
                     }
                 }
@@ -262,7 +268,7 @@ pub fn apply_sliding_window(
                         && msg.get("role").and_then(|r| r.as_str()) == Some("tool")
                     {
                         if let Some(id) = msg.get("tool_call_id").and_then(|id| id.as_str()) {
-                            if missing_ids.contains(&id.to_string()) {
+                            if !id.trim().is_empty() && missing_ids.contains(&id.to_string()) {
                                 preserve_indices.insert(i);
                             }
                         }
@@ -395,6 +401,64 @@ pub fn apply_sliding_window(
     // Sort preserved indices to maintain original order
     let mut preserved_indices_sorted: Vec<usize> = preserve_indices.into_iter().collect();
     preserved_indices_sorted.sort();
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // (4c) Validate tool pair integrity before building the final message list.
+    //      - Drop tool results with a missing/empty/unknown tool_call_id.
+    //      - Drop assistant messages whose tool_calls contain entries with a
+    //        missing/empty id, because the API cannot match them to tool results.
+    //      API errors covered:
+    //        * "tool result's tool id(...) not found (2013)"
+    //        * "tool_call_id is not found"
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {
+        fn is_valid_id(id: &str) -> bool {
+            !id.trim().is_empty()
+        }
+
+        let mut preserved_assistant_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &i in &preserved_indices_sorted {
+            if let Some(msg) = messages.get(i) {
+                if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        for tc in tool_calls {
+                            if let Some(id) = tc.get("id").and_then(|id| id.as_str()) {
+                                if is_valid_id(id) {
+                                    preserved_assistant_ids.insert(id.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        preserved_indices_sorted.retain(|&i| {
+            if let Some(msg) = messages.get(i) {
+                let role = msg.get("role").and_then(|r| r.as_str());
+                if role == Some("tool") {
+                    return match msg.get("tool_call_id").and_then(|id| id.as_str()) {
+                        Some(id) if is_valid_id(id) => preserved_assistant_ids.contains(id),
+                        _ => false,
+                    };
+                }
+                if role == Some("assistant") {
+                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                        // Drop assistant if any tool_call lacks a valid id.
+                        let all_valid = tool_calls.iter().all(|tc| {
+                            tc.get("id")
+                                .and_then(|id| id.as_str())
+                                .map_or(false, is_valid_id)
+                        });
+                        if !all_valid {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        });
+    }
 
     let mut summary_inserted = false;
     let mut summary = summary;
@@ -800,6 +864,75 @@ mod tests {
                 .iter()
                 .any(|m| m["role"].as_str() == Some("assistant")));
         }
+    }
+
+    #[test]
+    fn assistant_with_empty_tool_call_id_is_dropped() {
+        // Regression: assistant's tool_calls array contains an entry with empty id.
+        // The API cannot match the (future) tool result, so drop the assistant.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "", "function": {"name": "read", "arguments": "{}"}}]
+            }),
+            serde_json::json!({"role": "user", "content": "u2"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 100];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let has_bad_assistant = result.messages.iter().any(|m| {
+            m["role"].as_str() == Some("assistant") && m.get("tool_calls").is_some()
+        });
+        assert!(!has_bad_assistant, "assistant with empty tool_call id must be dropped");
+    }
+
+    #[test]
+    fn empty_tool_call_ids_are_dropped() {
+        // Regression: missing/empty tool_call_id values cause
+        // "tool_call_id is not found" API errors.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "", "content": "empty id"}),
+            serde_json::json!({"role": "tool", "content": "missing id"}),
+            serde_json::json!({"role": "assistant", "content": "ack"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 50, 50];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        let tool_count = result
+            .messages
+            .iter()
+            .filter(|m| m["role"].as_str() == Some("tool"))
+            .count();
+        assert_eq!(tool_count, 0, "tool results with empty/missing tool_call_id must be dropped");
+    }
+
+    #[test]
+    fn orphaned_tool_result_reference_dropped() {
+        // Regression: a tool result references a tool_call_id whose parent assistant
+        // is not preserved. The API rejects with "tool result's tool id(...) not found".
+        // The post-pass must drop the orphaned tool result.
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "u1"}),
+            // Orphaned tool result: no assistant in the array has tool_call_id "ghost"
+            serde_json::json!({"role": "tool", "tool_call_id": "ghost", "content": "phantom"}),
+            serde_json::json!({"role": "user", "content": "u2"}),
+            serde_json::json!({"role": "assistant", "content": "ack"}),
+        ];
+        let tokens = vec![50u64, 100, 50, 100, 50];
+        let result = apply_sliding_window(&msgs, &tokens, 2000, &config());
+
+        // The orphaned tool result for "ghost" must be dropped.
+        let has_orphan = result
+            .messages
+            .iter()
+            .any(|m| m["tool_call_id"].as_str() == Some("ghost"));
+        assert!(!has_orphan, "orphaned tool result for 'ghost' must be dropped");
     }
 
     #[test]

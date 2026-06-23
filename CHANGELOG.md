@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.15] - 2026-06-23
+
+### Fixed
+
+- **Drop Tool Results With Invalid tool_call_id**: Strengthened the tool-pair integrity pass so that tool results with a missing, empty, or whitespace-only `tool_call_id` are dropped instead of being forwarded to the API. Also drops assistant messages whose `tool_calls` array contains entries with an empty/missing `id`, because the API cannot match those calls to any tool result. This fixes the `"tool_call_id is not found"` error after context rolling.
+
 ## [3.17.14] - 2026-06-23
 
 ### Fixed
