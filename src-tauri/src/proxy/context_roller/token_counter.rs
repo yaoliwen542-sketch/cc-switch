@@ -155,6 +155,21 @@ pub fn estimate_message_tokens(message: &serde_json::Value) -> MessageTokens {
         }
     }
 
+    // JSON structural overhead: every message serializes to JSON with keys
+    // ("role", "content", "tool_calls", "type", etc.), quotes, brackets,
+    // and commas that are all tokenized. For large messages with many fields,
+    // this can exceed the visible text content. Use the full serialized byte
+    // count divided by ~4 as a floor, but never less than the content estimate.
+    if let Ok(serialized) = serde_json::to_string(message) {
+        let json_floor = (serialized.len() as u64) / 4; // ~4 bytes per token (JSON is dense)
+        let content_total = result.content + result.tool_calls + result.tool_results;
+        // The floor only applies if the JSON is significantly larger than the
+        // content estimate (otherwise the content estimate is already accurate).
+        if json_floor > content_total * 2 {
+            result.overhead += json_floor.saturating_sub(content_total);
+        }
+    }
+
     result
 }
 
@@ -166,13 +181,40 @@ fn estimate_content_tokens(content: &serde_json::Value) -> u64 {
             for block in blocks {
                 // Per-block structural overhead
                 total += 3;
-                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                // Thinking block: {"type": "thinking", "thinking": "..."}
+                // These are often very large (many KB of reasoning) but have
+                // a different key than "text". We must count them.
+                if let Some(text) = block
+                    .get("thinking")
+                    .and_then(|v| v.as_str())
+                {
+                    total += estimate_tokens(text);
+                }
+                // Redacted thinking: {"type": "redacted_thinking", "data": "base64..."}
+                // The base64 data is opaque but still tokenized; estimate
+                // based on byte length. Base64 is ~3 chars/token; we use 2
+                // to be conservative (high entropy → worse compression).
+                else if let Some(data) = block
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                {
+                    total += (data.len() as u64) / 2;
+                }
+                // Text / tool_use / tool_result content blocks
+                else if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                     total += estimate_tokens(text);
                 } else if let Some(_source) = block.get("source") {
                     // Image / document. Anthropic bills images at ~1.6K tokens
                     // for a 1024x1024 image regardless of detail. We estimate
                     // generously so we never under-count.
                     total += 1600;
+                }
+                // tool_use block: {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+                // The input JSON is tokenized; count its serialized size.
+                if let Some(input) = block.get("input") {
+                    if let Ok(bytes) = serde_json::to_string(input) {
+                        total += (bytes.len() as u64) / 3; // ~3 bytes per token
+                    }
                 }
             }
             total
@@ -296,5 +338,68 @@ mod tests {
         assert!(estimate_tokens("x") >= 1);
         assert!(estimate_tokens("Hello") >= 1);
         assert!(estimate_tokens("中") >= 1);
+    }
+
+    #[test]
+    fn thinking_block_is_counted() {
+        // thinking blocks use "thinking" key, not "text"
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "Let me think about this carefully. ".repeat(50)
+                },
+                {"type": "text", "text": "Here is my answer."}
+            ]
+        });
+        let tokens = estimate_message_tokens(&msg);
+        // The thinking block content is ~1850 chars, so should be ~660 tokens
+        // plus the text content and overhead. Should be well above 600.
+        assert!(tokens.content > 600, "thinking block tokens={}, expected >600", tokens.content);
+    }
+
+    #[test]
+    fn redacted_thinking_block_is_counted() {
+        // redacted_thinking blocks are base64 blobs; estimate based on data length
+        let base64_data = "aGVsbG8gd29ybGQ=".repeat(100); // 1600 chars of base64
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "redacted_thinking",
+                    "data": base64_data
+                },
+                {"type": "text", "text": "Answer."}
+            ]
+        });
+        let tokens = estimate_message_tokens(&msg);
+        // 1600 chars / 2 = 800 tokens for redacted data, plus text + overhead
+        assert!(tokens.content > 700, "redacted_thinking tokens={}, expected >700", tokens.content);
+    }
+
+    #[test]
+    fn json_overhead_caught_for_dense_messages() {
+        // A message with many tool_use blocks in content — each has input JSON
+        let mut blocks = vec![];
+        for i in 0..20 {
+            blocks.push(serde_json::json!({
+                "type": "tool_use",
+                "id": format!("tool_{i}"),
+                "name": "Read",
+                "input": {
+                    "file_path": format!("/some/long/path/to/file_{i}.ts"),
+                    "offset": 100,
+                    "limit": 2000
+                }
+            }));
+        }
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": blocks
+        });
+        let tokens = estimate_message_tokens(&msg);
+        // 20 tool_use blocks with JSON input should estimate significantly
+        assert!(tokens.total() > 200, "dense message tokens={}, expected >200", tokens.total());
     }
 }

@@ -274,23 +274,46 @@ impl RequestForwarder {
     ) -> Option<ForwardError> {
         // Provider 错误：本家上游/网络确实出问题，下一家 provider 可能可用 → 继续故障转移。
         // 客户端错误：整流后请求仍违法，下一家也修不好 → 直接返回。
-        let is_provider_error = match &retry_err {
-            ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => true,
-            ProxyError::UpstreamError { status, .. } => *status >= 500,
-            _ => false,
+        // 特殊例外：400/413/414 + 上下文/Token 长度超限文案 → 当前供应商模型窗口不够大，
+        // 换一家更大窗口的供应商可能成功，继续故障转移且不污染健康度。
+        let is_context_overflow = matches!(
+            &retry_err,
+            ProxyError::UpstreamError { status, body }
+                if super::error::is_context_length_overflow(*status, body.as_deref())
+        );
+
+        let is_provider_error = if is_context_overflow {
+            true
+        } else {
+            match &retry_err {
+                ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => true,
+                ProxyError::UpstreamError { status, .. } => *status >= 500,
+                _ => false,
+            }
         };
 
         if is_provider_error {
-            let _ = self
-                .router
-                .record_result(
-                    &provider.id,
-                    app_type_str,
-                    used_half_open_permit,
-                    false,
-                    Some(retry_err.to_string()),
-                )
-                .await;
+            // 上下文超限不污染健康度：释放 HalfOpen permit，不计入失败记录
+            if is_context_overflow {
+                self.router
+                    .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
+                    .await;
+                log::info!(
+                    "[{app_type_str}] Provider {rectifier_label} 上下文窗口超限（请求超出当前模型最大 token），继续尝试下一个供应商: {}",
+                    retry_err,
+                );
+            } else {
+                let _ = self
+                    .router
+                    .record_result(
+                        &provider.id,
+                        app_type_str,
+                        used_half_open_permit,
+                        false,
+                        Some(retry_err.to_string()),
+                    )
+                    .await;
+            }
             {
                 let mut status = self.status.write().await;
                 status.last_error = Some(format!(
@@ -3711,5 +3734,66 @@ mod tests {
         });
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[tokio::test]
+    async fn rectifier_context_overflow_400_continues_failover() {
+        // 上下文超限 400 经整流器重试后仍失败 → 应继续故障转移（return None）
+        // 而非当成客户端错误返回给用户（return Some(ForwardError)）
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"type":"invalid_request_error","message":"Invalid request: Your request exceeded model token limit: 262144 (requested: 270394)"}}"#
+                    .to_string(),
+            ),
+        };
+        let provider = test_provider_with_type(None);
+        let mut last_error = None;
+        let mut last_provider = None;
+
+        let result = fwd
+            .handle_rectifier_retry_failure(
+                err,
+                &provider,
+                "claude",
+                false,
+                "thinking 整流",
+                &mut last_error,
+                &mut last_provider,
+            )
+            .await;
+
+        // return None → 调用方应 continue 继续故障转移
+        assert!(result.is_none(), "context-overflow 400 should continue failover, not return error to client");
+        assert!(last_error.is_some(), "last_error should be set for logging");
+    }
+
+    #[tokio::test]
+    async fn rectifier_unrelated_400_returns_to_client() {
+        // 普通 400（如 invalid API key）经整流器重试后仍失败 → 应返回给客户端
+        let fwd = test_forwarder(Duration::from_secs(30), Duration::from_secs(15));
+        let err = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"Invalid API key"}}"#.to_string()),
+        };
+        let provider = test_provider_with_type(None);
+        let mut last_error = None;
+        let mut last_provider = None;
+
+        let result = fwd
+            .handle_rectifier_retry_failure(
+                err,
+                &provider,
+                "claude",
+                false,
+                "thinking 整流",
+                &mut last_error,
+                &mut last_provider,
+            )
+            .await;
+
+        // return Some(ForwardError) → 客户端错误，不再故障转移
+        assert!(result.is_some(), "unrelated 400 should return error to client");
     }
 }

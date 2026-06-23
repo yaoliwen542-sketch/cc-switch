@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.13] - 2026-06-23
+
+### Fixed
+
+- **Context-Overflow Failover Bypassed by Rectifier**: When the thinking-signature rectifier retries a request and the retry fails with a token-limit 400 (e.g. `Your request exceeded model token limit: 262144`), the error was treated as a client error and returned to the user without trying the next provider. The rectifier failure handler now detects context-overflow errors (same `is_context_length_overflow` check) and continues failover instead, while still not penalising the source provider's health.
+- **Token Estimation Severely Under-counting for Long Sessions**: The rolling-context token estimator (`estimate_message_tokens`) was off by ~10× for sessions with many `thinking`/`redacted_thinking` blocks and tool-use messages. The estimator now counts `thinking` block content (key `"thinking"`, not `"text"`), estimates `redacted_thinking` block data by byte length, counts `tool_use` input JSON size, and applies a per-message JSON-serialization floor to catch structural overhead (JSON keys, brackets, commas). With these fixes the body-size trigger correctly fires before the request exceeds the provider's window.
+
 ## [3.17.12] - 2026-06-23
 
 ### Fixed
